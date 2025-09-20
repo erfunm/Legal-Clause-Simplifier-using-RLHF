@@ -1,0 +1,16 @@
+transformers
+datasets
+accelerate
+trl
+torch
+pyyaml
+evaluate
+bert-score
+easse
+textstat
+spacy
+preshed
+thinc
+streamlit
+tqdm
+wandb
