@@ -1,0 +1,8 @@
+# Placeholder configuration for supervised fine-tuning.
+# Populated with real hyperparameters in subsequent steps.
+model_name: distilgpt2
+train_batch_size: 4
+eval_batch_size: 4
+num_train_epochs: 1
+learning_rate: 5e-5
+output_dir: checkpoints/sft
