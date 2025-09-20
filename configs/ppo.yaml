@@ -1,0 +1,81 @@
+# PPO RLHF configuration for the Legal Clause Simplifier project. This file is
+# consumed by scripts/ppo_train.py to determine data sources, hyperparameters,
+# and SageMaker infrastructure defaults.
+
+experiment:
+  name: distilgpt2-ppo
+  seed: 123
+
+paths:
+  train_csv: data/processed/clauses_train.csv
+  eval_csv: data/processed/clauses_dev.csv
+  test_csv: data/processed/clauses_test.csv
+  output_dir: checkpoints/ppo
+  output_s3_uri: s3://legal-clause-simplifier/checkpoints/ppo/
+  tensorboard_s3_uri: s3://legal-clause-simplifier/logs/ppo/
+  policy_init_checkpoint: checkpoints/sft
+  reference_model: checkpoints/sft
+
+prompt:
+  template: |-
+    Simplify the following legal clause in plain English while preserving entities (dates, amounts, parties, defined terms).
+
+    Clause: {clause}
+
+    Simplified:
+  max_prompt_tokens: 512
+
+reward:
+  bertscore_model: roberta-large
+  readability:
+    target_grade: 8.0
+    max_bonus: 1.0
+  entity_penalty:
+    weight: 0.5
+    missing_entity_penalty: 1.0
+  reward_clip:
+    min: -1.0
+    max: 1.5
+
+ppo:
+  batch_size: 64
+  mini_batch_size: 16
+  gradient_accumulation_steps: 1
+  ppo_epochs: 4
+  learning_rate: 1.0e-5
+  target_kl: 0.15
+  clip_range: 0.2
+  clip_range_value: 0.2
+  value_loss_coef: 1.0
+  whiten_rewards: true
+  vf_clip_range: 1.0
+  early_stopping_kl: 0.3
+
+strategy:
+  rollout_batch_size: 256
+  generation_batch_size: 16
+  max_steps: 1000
+  save_steps: 200
+  eval_steps: 200
+
+generation:
+  max_new_tokens: 128
+  min_new_tokens: 16
+  temperature: 0.7
+  top_p: 0.9
+  top_k: 0
+  repetition_penalty: 1.05
+  do_sample: true
+
+logging:
+  report_to: ["tensorboard", "wandb"]
+  log_with: wandb
+  wandb_project: legal-clause-simplifier
+  wandb_run_name: ppo-rlhf
+  logging_steps: 10
+
+sagemaker:
+  instance_type: ml.g5.2xlarge
+  instance_count: 1
+  volume_size_gb: 300
+  max_runtime_seconds: 21600
