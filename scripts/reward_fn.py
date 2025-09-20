@@ -33,7 +33,7 @@ DEFAULT_WEIGHTS: Dict[str, float] = {
     "entity_penalty": 1.0,
 }
 
-
+  
 @dataclass
 class RewardComponents:
     """Breakdown of the individual reward signals."""
