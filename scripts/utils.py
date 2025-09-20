@@ -148,6 +148,7 @@ def upload_directory_to_s3(local_dir: Path | str, s3_uri: str) -> None:
         LOGGER.info("Uploading %s to s3://%s/%s", path, bucket, key)
         client.upload_file(str(path), bucket, key)
 
+        
 def download_file_from_s3(s3_uri: str, local_path: Path | str) -> Path:
     """Download ``s3_uri`` to ``local_path`` and return the resolved path."""
 
