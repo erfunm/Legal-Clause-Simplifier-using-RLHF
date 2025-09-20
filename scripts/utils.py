@@ -128,6 +128,26 @@ def upload_file_to_s3(local_path: Path | str, s3_uri: str) -> None:
     client.upload_file(str(local_path), bucket, key)
 
 
+def upload_directory_to_s3(local_dir: Path | str, s3_uri: str) -> None:
+    """Upload all files under ``local_dir`` to the provided S3 prefix."""
+
+    local_dir = Path(local_dir)
+    if not local_dir.exists():
+        raise FileNotFoundError(f"Cannot upload from missing directory: {local_dir}")
+    client = get_s3_client()
+    bucket, prefix = parse_s3_uri(s3_uri)
+    prefix = prefix.rstrip("/")
+    for path in local_dir.rglob("*"):
+        if not path.is_file():
+            continue
+        relative_key = path.relative_to(local_dir).as_posix()
+        if prefix:
+            key = f"{prefix}/{relative_key}"
+        else:
+            key = relative_key
+        LOGGER.info("Uploading %s to s3://%s/%s", path, bucket, key)
+        client.upload_file(str(path), bucket, key)
+
 def download_file_from_s3(s3_uri: str, local_path: Path | str) -> Path:
     """Download ``s3_uri`` to ``local_path`` and return the resolved path."""
 
@@ -315,6 +335,7 @@ __all__ = [
     "parse_s3_uri",
     "save_jsonlines",
     "set_seed",
+    "upload_directory_to_s3",
     "upload_file_to_s3",
     "validate_entities",
 ]

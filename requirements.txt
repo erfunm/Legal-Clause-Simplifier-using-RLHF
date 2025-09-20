@@ -3,6 +3,7 @@ datasets
 accelerate
 trl
 torch
+pyyaml
 evaluate
 bert-score
 easse
