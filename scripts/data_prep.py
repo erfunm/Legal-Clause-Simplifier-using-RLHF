@@ -16,7 +16,6 @@ Even though the simplifying model can be swapped for a powerful endpoint (for
 example Mistral-7B running in SageMaker), the helper gracefully falls back to a
 cheap local heuristic which keeps unit tests light weight and makes the script
 runnable on CPU-only developers machines.
-
 """
 
 from __future__ import annotations
@@ -139,7 +138,6 @@ class ClauseSimplifier:
         if sentences:
             simplified = " ".join(sentences[:2])
         return simplified.strip()
-
 
 
 def parse_args() -> argparse.Namespace:
