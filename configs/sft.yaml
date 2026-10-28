@@ -1,8 +1,11 @@
-# Supervised fine-tuning of the base model on silver/golden references.
-# Real run: one 24 GB GPU (L4 / A10G). LoRA, the GPU notebook and logging
-# settings are added in Phase 2.
+# Supervised fine-tuning of the base model on the silver references, with a LoRA adapter.
+# Real run: one 24 GB GPU (NVIDIA L4 / A10G) in bf16.
+#   modal run scripts/modal_sft.py                    (Modal, L4)
+#   notebooks/sft_colab_kaggle.ipynb                  (Colab / Kaggle)
+#   uv run lcs train-sft --config configs/sft.yaml    (any CUDA machine)
+# Writes checkpoints/sft/{adapter,merged}/ with model cards; see docs/RUNBOOK.md §2.
 experiment:
-  name: sft-qwen3.5-0.8b
+  name: sft-qwen3.5-0.8b-lora
   seed: 42
 
 data:
@@ -14,19 +17,38 @@ model:
   name_or_path: Qwen/Qwen3.5-0.8B
   revision: 2fc06364715b967f1860aea9cf38778875588b17
   dtype: bfloat16
-  # Fallback base model (see docs/decisions.md, ADR-001):
+  # Fallback base model (docs/decisions.md, ADR-001). Also swap lora.target_modules below:
   # name_or_path: Qwen/Qwen3-1.7B
   # revision: 70d244cc86ccca08cf5af4e1e306ecf908b1ad5e
   # chat_template_kwargs: {enable_thinking: false}
 
+lora:
+  enabled: true
+  r: 16
+  alpha: 32
+  dropout: 0.05
+  # Qwen3.5: full attention + Gated DeltaNet + MLP projections (ADR-016).
+  target_modules: [q_proj, k_proj, v_proj, o_proj, in_proj_qkv, in_proj_z, out_proj, gate_proj, up_proj, down_proj]
+  # Qwen3-1.7B fallback (no linear-attention layers):
+  # target_modules: [q_proj, k_proj, v_proj, o_proj, gate_proj, up_proj, down_proj]
+
+quantization:
+  load_in_4bit: false   # true = QLoRA (needs the `qlora` extra and a CUDA GPU); not needed for 0.8B on 24 GB
+
+tracking:
+  backend: trackio      # trackio (local, no account) | wandb (needs WANDB_API_KEY) | none
+  project: legal-clause-simplifier
+  trackio_dir: null     # null = Trackio's default local store
+  trackio_space_id: null  # setting this PUBLISHES the dashboard as an HF Space: ask first
+
 training:
   output_dir: checkpoints/sft
   max_length: 1024
-  per_device_train_batch_size: 4
-  per_device_eval_batch_size: 4
-  gradient_accumulation_steps: 4
+  per_device_train_batch_size: 8
+  per_device_eval_batch_size: 8
+  gradient_accumulation_steps: 2
   num_train_epochs: 3
-  learning_rate: 2.0e-5
+  learning_rate: 2.0e-4
   warmup_steps: 0.03  # fraction of total steps
   lr_scheduler_type: cosine
   bf16: true
@@ -35,4 +57,4 @@ training:
   eval_strategy: epoch
   save_strategy: epoch
   save_total_limit: 2
-  report_to: [none]
+  save_merged: true

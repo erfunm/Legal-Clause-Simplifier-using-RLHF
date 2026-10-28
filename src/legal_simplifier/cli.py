@@ -228,15 +228,51 @@ def train_sft(
     ),
     output_dir: Annotated[Path | None, typer.Option(help="Override training.output_dir.")] = None,
 ) -> None:
-    """Supervised fine-tuning with TRL SFTTrainer (completion-only loss)."""
+    """Supervised fine-tuning with TRL SFTTrainer: LoRA/QLoRA, completion-only loss."""
 
     from legal_simplifier.config import SFTConfigFile, load_config
     from legal_simplifier.training.sft import train_sft as run
+    from legal_simplifier.training.tracking import TrackingPublishRefused
 
     cfg = load_config(config, SFTConfigFile)
     if output_dir is not None:
         cfg.training.output_dir = output_dir
-    typer.echo(f"Saved model to {run(cfg)}")
+    try:
+        run_dir = run(cfg)
+    except TrackingPublishRefused as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+    typer.echo(f"Saved SFT run to {run_dir}")
+
+
+@app.command("merge-adapter")
+def merge_adapter(
+    run_dir: Annotated[Path, typer.Option(help="An SFT run directory (holds adapter/).")],
+    output_dir: Annotated[Path | None, typer.Option(help="Default: <run-dir>/merged.")] = None,
+) -> None:
+    """Merge a LoRA adapter into its base model (loaded in its training dtype, never 4 bit)."""
+
+    from legal_simplifier.config import SFTConfigFile
+    from legal_simplifier.training.model_card import write_model_cards
+    from legal_simplifier.training.sft import ADAPTER_DIR, MERGED_DIR
+    from legal_simplifier.training.sft import merge_adapter as merge
+
+    cfg = SFTConfigFile.model_validate_json((run_dir / "experiment.json").read_text())
+    out = merge(run_dir / ADAPTER_DIR, output_dir or run_dir / MERGED_DIR, cfg.model)
+    write_model_cards(run_dir)
+    typer.echo(f"Wrote merged weights to {out}")
+
+
+@app.command("model-card")
+def model_card(
+    run_dir: Annotated[Path, typer.Option(help="An SFT run directory.")],
+) -> None:
+    """(Re)write README.md model cards for a run from its experiment, metrics and data stats."""
+
+    from legal_simplifier.training.model_card import write_model_cards
+
+    for path in write_model_cards(run_dir):
+        typer.echo(f"Wrote {path}")
 
 
 @app.command("train-grpo")

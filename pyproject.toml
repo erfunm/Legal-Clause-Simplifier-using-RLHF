@@ -23,6 +23,15 @@ train = [
     "transformers>=5.20",
     "trl>=1.16",
 ]
+# Experiment tracking for training runs (choose one in the config's `tracking` block).
+tracking = [
+    "trackio>=0.44",
+    "wandb>=0.31",
+]
+# 4-bit QLoRA. bitsandbytes needs a CUDA GPU at run time; on CPU only the config is built.
+qlora = [
+    "bitsandbytes>=0.50; sys_platform == 'linux'",
+]
 eval = [
     "bert-score>=0.3.13",
 ]
