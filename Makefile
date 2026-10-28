@@ -9,12 +9,12 @@ install:  ## Create .venv with every extra and the dev tools
 	uv sync --all-extras
 
 lint:  ## Ruff lint + format check
-	uv run ruff check src tests
-	uv run ruff format --check src tests
+	uv run ruff check src tests scripts
+	uv run ruff format --check src tests scripts
 
 format:  ## Apply ruff fixes and formatting
-	uv run ruff check --fix src tests
-	uv run ruff format src tests
+	uv run ruff check --fix src tests scripts
+	uv run ruff format src tests scripts
 
 typecheck:
 	uv run pyright
