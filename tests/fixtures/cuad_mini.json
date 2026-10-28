@@ -1,0 +1,249 @@
+{
+ "version": "aok_v1.0",
+ "data": [
+  {
+   "title": "ACMEWIDGETS_2019-EX-10.1-SUPPLY AGREEMENT",
+   "paragraphs": [
+    {
+     "context": "ACMEWIDGETS_2019-EX-10.1-SUPPLY AGREEMENT\n\nSUPPLY AGREEMENT \n\nSection break. This Agreement shall be governed by and construed in accordance with the laws of the State of Delaware, without regard to its conflict of laws principles. \n\nSection break. Either party may terminate this Agreement for any reason upon ninety (90) days prior written notice. Upon such termination, Buyer shall pay for all Products delivered before the effective date of termination. \n\nSection break. In no event shall Acme Widgets, Inc. be liable for more than $250,000, and any late delivery shall incur liquidated damages of 2% of the order value per week. \n\nSection break. Neither party may assign. \n\nSection break. ",
+     "qas": [
+      {
+       "answers": [
+        {
+         "text": "Neither party may assign.",
+         "answer_start": 651
+        }
+       ],
+       "id": "ACMEWIDGETS_2019-EX-10.1-SUPPLY AGREEMENT__Anti-Assignment",
+       "question": "Highlight the parts (if any) of this contract related to \"Anti-Assignment\" that should be reviewed by a lawyer. Details: synthetic test question.",
+       "is_impossible": false
+      },
+      {
+       "answers": [
+        {
+         "text": "In no event shall Acme Widgets, Inc. be liable for more than $250,000, and any late delivery shall incur liquidated damages of 2% of the order value per week.",
+         "answer_start": 475
+        }
+       ],
+       "id": "ACMEWIDGETS_2019-EX-10.1-SUPPLY AGREEMENT__Cap On Liability",
+       "question": "Highlight the parts (if any) of this contract related to \"Cap On Liability\" that should be reviewed by a lawyer. Details: synthetic test question.",
+       "is_impossible": false
+      },
+      {
+       "answers": [
+        {
+         "text": "SUPPLY AGREEMENT",
+         "answer_start": 43
+        }
+       ],
+       "id": "ACMEWIDGETS_2019-EX-10.1-SUPPLY AGREEMENT__Document Name",
+       "question": "Highlight the parts (if any) of this contract related to \"Document Name\" that should be reviewed by a lawyer. Details: synthetic test question.",
+       "is_impossible": false
+      },
+      {
+       "answers": [
+        {
+         "text": "This Agreement shall be governed by and construed in accordance with the laws of the State of Delaware, without regard to its conflict of laws principles.",
+         "answer_start": 77
+        }
+       ],
+       "id": "ACMEWIDGETS_2019-EX-10.1-SUPPLY AGREEMENT__Governing Law",
+       "question": "Highlight the parts (if any) of this contract related to \"Governing Law\" that should be reviewed by a lawyer. Details: synthetic test question.",
+       "is_impossible": false
+      },
+      {
+       "answers": [],
+       "id": "ACMEWIDGETS_2019-EX-10.1-SUPPLY AGREEMENT__Insurance",
+       "question": "Highlight the parts (if any) of this contract related to \"Insurance\" that should be reviewed by a lawyer. Details: synthetic test question.",
+       "is_impossible": true
+      },
+      {
+       "answers": [
+        {
+         "text": "In no event shall Acme Widgets, Inc. be liable for more than $250,000, and any late delivery shall incur liquidated damages of 2% of the order value per week.",
+         "answer_start": 475
+        }
+       ],
+       "id": "ACMEWIDGETS_2019-EX-10.1-SUPPLY AGREEMENT__Liquidated Damages",
+       "question": "Highlight the parts (if any) of this contract related to \"Liquidated Damages\" that should be reviewed by a lawyer. Details: synthetic test question.",
+       "is_impossible": false
+      },
+      {
+       "answers": [
+        {
+         "text": "Either party may terminate this Agreement for any reason upon ninety (90) days prior written notice.",
+         "answer_start": 249
+        },
+        {
+         "text": "Upon such termination, Buyer shall pay for all Products delivered before the effective date of termination.",
+         "answer_start": 350
+        }
+       ],
+       "id": "ACMEWIDGETS_2019-EX-10.1-SUPPLY AGREEMENT__Termination For Convenience",
+       "question": "Highlight the parts (if any) of this contract related to \"Termination For Convenience\" that should be reviewed by a lawyer. Details: synthetic test question.",
+       "is_impossible": false
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "title": "GLOBEXCORP_2020-EX-10.4-DISTRIBUTION AGREEMENT",
+   "paragraphs": [
+    {
+     "context": "GLOBEXCORP_2020-EX-10.4-DISTRIBUTION AGREEMENT\n\nThis Agreement shall be governed by and construed in accordance with the laws of the State of Delaware, without regard to its conflicts of law principles. \n\nSection break. Globex Corporation (the \"Distributor\") shall be the exclusive distributor of the Products in the Territory commencing January 1, 2021. \n\nSection break. During the Term and for twelve (12) months thereafter, the Distributor shall not sell any product that competes with the Products. \n\nSection break. Following expiration, the Distributor shall provide transition service number 0 to the Supplier at the rates then in effect. Following expiration, the Distributor shall provide transition service number 1 to the Supplier at the rates then in effect. Following expiration, the Distributor shall provide transition service number 2 to the Supplier at the rates then in effect. Following expiration, the Distributor shall provide transition service number 3 to the Supplier at the rates then in effect. Following expiration, the Distributor shall provide transition service number 4 to the Supplier at the rates then in effect. Following expiration, the Distributor shall provide transition service number 5 to the Supplier at the rates then in effect. Following expiration, the Distributor shall provide transition service number 6 to the Supplier at the rates then in effect. Following expiration, the Distributor shall provide transition service number 7 to the Supplier at the rates then in effect. Following expiration, the Distributor shall provide transition service number 8 to the Supplier at the rates then in effect. Following expiration, the Distributor shall provide transition service number 9 to the Supplier at the rates then in effect. Following expiration, the Distributor shall provide transition service number 10 to the Supplier at the rates then in effect. Following expiration, the Distributor shall provide transition service number 11 to the Supplier at the rates then in effect. Following expiration, the Distributor shall provide transition service number 12 to the Supplier at the rates then in effect. Following expiration, the Distributor shall provide transition service number 13 to the Supplier at the rates then in effect. Following expiration, the Distributor shall provide transition service number 14 to the Supplier at the rates then in effect. \n\nSection break. ",
+     "qas": [
+      {
+       "answers": [
+        {
+         "text": "Globex Corporation (the \"Distributor\") shall be the exclusive distributor of the Products in the Territory commencing January 1, 2021.",
+         "answer_start": 220
+        }
+       ],
+       "id": "GLOBEXCORP_2020-EX-10.4-DISTRIBUTION AGREEMENT__Exclusivity",
+       "question": "Highlight the parts (if any) of this contract related to \"Exclusivity\" that should be reviewed by a lawyer. Details: synthetic test question.",
+       "is_impossible": false
+      },
+      {
+       "answers": [
+        {
+         "text": "This Agreement shall be governed by and construed in accordance with the laws of the State of Delaware, without regard to its conflicts of law principles.",
+         "answer_start": 48
+        }
+       ],
+       "id": "GLOBEXCORP_2020-EX-10.4-DISTRIBUTION AGREEMENT__Governing Law",
+       "question": "Highlight the parts (if any) of this contract related to \"Governing Law\" that should be reviewed by a lawyer. Details: synthetic test question.",
+       "is_impossible": false
+      },
+      {
+       "answers": [],
+       "id": "GLOBEXCORP_2020-EX-10.4-DISTRIBUTION AGREEMENT__Insurance",
+       "question": "Highlight the parts (if any) of this contract related to \"Insurance\" that should be reviewed by a lawyer. Details: synthetic test question.",
+       "is_impossible": true
+      },
+      {
+       "answers": [
+        {
+         "text": "During the Term and for twelve (12) months thereafter, the Distributor shall not sell any product that competes with the Products.",
+         "answer_start": 372
+        }
+       ],
+       "id": "GLOBEXCORP_2020-EX-10.4-DISTRIBUTION AGREEMENT__Non-Compete",
+       "question": "Highlight the parts (if any) of this contract related to \"Non-Compete\" that should be reviewed by a lawyer. Details: synthetic test question.",
+       "is_impossible": false
+      },
+      {
+       "answers": [
+        {
+         "text": "Following expiration, the Distributor shall provide transition service number 0 to the Supplier at the rates then in effect. Following expiration, the Distributor shall provide transition service number 1 to the Supplier at the rates then in effect. Following expiration, the Distributor shall provide transition service number 2 to the Supplier at the rates then in effect. Following expiration, the Distributor shall provide transition service number 3 to the Supplier at the rates then in effect. Following expiration, the Distributor shall provide transition service number 4 to the Supplier at the rates then in effect. Following expiration, the Distributor shall provide transition service number 5 to the Supplier at the rates then in effect. Following expiration, the Distributor shall provide transition service number 6 to the Supplier at the rates then in effect. Following expiration, the Distributor shall provide transition service number 7 to the Supplier at the rates then in effect. Following expiration, the Distributor shall provide transition service number 8 to the Supplier at the rates then in effect. Following expiration, the Distributor shall provide transition service number 9 to the Supplier at the rates then in effect. Following expiration, the Distributor shall provide transition service number 10 to the Supplier at the rates then in effect. Following expiration, the Distributor shall provide transition service number 11 to the Supplier at the rates then in effect. Following expiration, the Distributor shall provide transition service number 12 to the Supplier at the rates then in effect. Following expiration, the Distributor shall provide transition service number 13 to the Supplier at the rates then in effect. Following expiration, the Distributor shall provide transition service number 14 to the Supplier at the rates then in effect.",
+         "answer_start": 520
+        }
+       ],
+       "id": "GLOBEXCORP_2020-EX-10.4-DISTRIBUTION AGREEMENT__Post-Termination Services",
+       "question": "Highlight the parts (if any) of this contract related to \"Post-Termination Services\" that should be reviewed by a lawyer. Details: synthetic test question.",
+       "is_impossible": false
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "title": "INITECH_2021-EX-10.2-LICENSE AGREEMENT",
+   "paragraphs": [
+    {
+     "context": "INITECH_2021-EX-10.2-LICENSE AGREEMENT\n\nAll right, title and interest in any Deliverables created by the Consultant shall vest in Initech LLC upon creation. \n\nSection break. If Initech LLC undergoes a change of control, the Licensor may terminate this Agreement upon thirty (30) days written notice. \n\nSection break. This Agreement shall automatically renew for successive one (1) year terms unless either party gives notice of non-renewal at least sixty (60) days before the end of the then-current term. \n\nSection break. ",
+     "qas": [
+      {
+       "answers": [
+        {
+         "text": "If Initech LLC undergoes a change of control, the Licensor may terminate this Agreement upon thirty (30) days written notice.",
+         "answer_start": 174
+        }
+       ],
+       "id": "INITECH_2021-EX-10.2-LICENSE AGREEMENT__Change Of Control",
+       "question": "Highlight the parts (if any) of this contract related to \"Change Of Control\" that should be reviewed by a lawyer. Details: synthetic test question.",
+       "is_impossible": false
+      },
+      {
+       "answers": [],
+       "id": "INITECH_2021-EX-10.2-LICENSE AGREEMENT__Insurance",
+       "question": "Highlight the parts (if any) of this contract related to \"Insurance\" that should be reviewed by a lawyer. Details: synthetic test question.",
+       "is_impossible": true
+      },
+      {
+       "answers": [
+        {
+         "text": "All right, title and interest in any Deliverables created by the Consultant shall vest in Initech LLC upon creation.",
+         "answer_start": 40
+        }
+       ],
+       "id": "INITECH_2021-EX-10.2-LICENSE AGREEMENT__Ip Ownership Assignment",
+       "question": "Highlight the parts (if any) of this contract related to \"Ip Ownership Assignment\" that should be reviewed by a lawyer. Details: synthetic test question.",
+       "is_impossible": false
+      },
+      {
+       "answers": [
+        {
+         "text": "This Agreement shall automatically renew for successive one (1) year terms unless either party gives notice of non-renewal at least sixty (60) days before the end of the then-current term.",
+         "answer_start": 317
+        }
+       ],
+       "id": "INITECH_2021-EX-10.2-LICENSE AGREEMENT__Renewal Term",
+       "question": "Highlight the parts (if any) of this contract related to \"Renewal Term\" that should be reviewed by a lawyer. Details: synthetic test question.",
+       "is_impossible": false
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "title": "HOOLI_2022-EX-10.9-SERVICES AGREEMENT",
+   "paragraphs": [
+    {
+     "context": "HOOLI_2022-EX-10.9-SERVICES AGREEMENT\n\nThis Agreement is governed by the laws of England and Wales and the parties submit to the courts of London. \n\nSection break. Neither party may assign this Agreement without the prior written consent of the other party, which shall not be unreasonably withheld. \n\nSection break. Each party's total liability under this Agreement shall not exceed the fees paid in the twelve (12) months preceding the claim, or USD 1,000,000, whichever is lower. \n\nSection break. ",
+     "qas": [
+      {
+       "answers": [
+        {
+         "text": "Neither party may assign this Agreement without the prior written consent of the other party, which shall not be unreasonably withheld.",
+         "answer_start": 164
+        }
+       ],
+       "id": "HOOLI_2022-EX-10.9-SERVICES AGREEMENT__Anti-Assignment",
+       "question": "Highlight the parts (if any) of this contract related to \"Anti-Assignment\" that should be reviewed by a lawyer. Details: synthetic test question.",
+       "is_impossible": false
+      },
+      {
+       "answers": [
+        {
+         "text": "Each party's total liability under this Agreement shall not exceed the fees paid in the twelve (12) months preceding the claim, or USD 1,000,000, whichever is lower.",
+         "answer_start": 317
+        }
+       ],
+       "id": "HOOLI_2022-EX-10.9-SERVICES AGREEMENT__Cap On Liability",
+       "question": "Highlight the parts (if any) of this contract related to \"Cap On Liability\" that should be reviewed by a lawyer. Details: synthetic test question.",
+       "is_impossible": false
+      },
+      {
+       "answers": [
+        {
+         "text": "This Agreement is governed by the laws of England and Wales and the parties submit to the courts of London.",
+         "answer_start": 39
+        }
+       ],
+       "id": "HOOLI_2022-EX-10.9-SERVICES AGREEMENT__Governing Law",
+       "question": "Highlight the parts (if any) of this contract related to \"Governing Law\" that should be reviewed by a lawyer. Details: synthetic test question.",
+       "is_impossible": false
+      },
+      {
+       "answers": [],
+       "id": "HOOLI_2022-EX-10.9-SERVICES AGREEMENT__Insurance",
+       "question": "Highlight the parts (if any) of this contract related to \"Insurance\" that should be reviewed by a lawyer. Details: synthetic test question.",
+       "is_impossible": true
+      }
+     ]
+    }
+   ]
+  }
+ ]
+}

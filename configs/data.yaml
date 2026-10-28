@@ -1,0 +1,33 @@
+# Data pipeline: CUAD extraction -> dedup + contract split -> silver references -> golden set.
+#   lcs prepare-data          (downloads the pinned CUAD_v1.json; free)
+#   lcs generate-references   (claude backend: dry run unless --yes; paid API)
+#   lcs build-golden          (selects the golden set from test, marked unreviewed)
+#   lcs review --reviewer NAME
+#   lcs dataset-card
+output_dir: data/processed
+
+extraction:
+  cuad_json: null          # null = download theatticusproject/cuad at the pinned revision
+  categories: null         # null = legal_simplifier.data.cuad.DEFAULT_CATEGORIES (11 types)
+  min_chars: 40
+  min_words: 6
+  max_chars: 1500
+
+split:
+  dedup_threshold: 0.8
+  ratios: [0.8, 0.1, 0.1]
+  seed: 13
+
+references:
+  backend: claude
+  model: claude-sonnet-5-5
+  effort: medium
+  max_tokens: 4096
+  cache_dir: data/cache/anthropic
+  cost_log: data/cache/anthropic/cost_log.jsonl
+  poll_interval_s: 60
+
+golden:
+  output_dir: data/golden
+  size: 150
+  seed: 7

@@ -1,0 +1,50 @@
+{
+  "_comment": "Hand-written Message Batches results (not recorded from the API), validated against anthropic SDK types in tests/fakes.py.",
+  "succeeded": {
+    "type": "succeeded",
+    "message": {
+      "id": "msg_fixture_0001",
+      "type": "message",
+      "role": "assistant",
+      "model": "claude-sonnet-5-5",
+      "content": [
+        {"type": "thinking", "thinking": "", "signature": "fixture-signature"},
+        {"type": "text", "text": "{\"simplified\": \"placeholder\"}"}
+      ],
+      "stop_reason": "end_turn",
+      "stop_sequence": null,
+      "stop_details": null,
+      "usage": {
+        "input_tokens": 400,
+        "output_tokens": 100,
+        "cache_read_input_tokens": 500,
+        "cache_creation_input_tokens": 0
+      }
+    }
+  },
+  "refusal": {
+    "type": "succeeded",
+    "message": {
+      "id": "msg_fixture_0002",
+      "type": "message",
+      "role": "assistant",
+      "model": "claude-sonnet-5-5",
+      "content": [],
+      "stop_reason": "refusal",
+      "stop_sequence": null,
+      "stop_details": {"type": "refusal", "category": null, "explanation": "fixture refusal"},
+      "usage": {
+        "input_tokens": 400,
+        "output_tokens": 5,
+        "cache_read_input_tokens": 0,
+        "cache_creation_input_tokens": 0
+      }
+    }
+  },
+  "errored": {
+    "type": "errored",
+    "error": {"type": "error", "error": {"type": "overloaded_error", "message": "Overloaded"}}
+  },
+  "expired": {"type": "expired"},
+  "canceled": {"type": "canceled"}
+}

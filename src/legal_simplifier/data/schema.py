@@ -11,7 +11,7 @@ from __future__ import annotations
 import json
 from collections.abc import Iterable, Iterator
 from pathlib import Path
-from typing import Literal
+from typing import Literal, TypeVar
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -19,36 +19,56 @@ ReferenceSource = Literal["mock", "claude", "human"]
 Split = Literal["train", "dev", "test"]
 
 
-class ClauseRecord(BaseModel):
-    """One legal clause with its plain-English reference and required entities."""
+class ClauseCandidate(BaseModel):
+    """An extracted clause and its required entities, before it has a reference."""
 
     model_config = ConfigDict(extra="forbid")
 
     id: str
     contract_id: str = Field(description="Source contract; splits never share a contract.")
     category: str
+    extra_categories: list[str] = Field(
+        default_factory=list,
+        description="Other categories CUAD gave the same span in the same contract.",
+    )
     clause: str
-    reference: str
-    reference_source: ReferenceSource
     entities: list[str] = Field(default_factory=list)
     split: Split | None = None
+
+
+class ClauseRecord(ClauseCandidate):
+    """A clause with its plain-English reference."""
+
+    reference: str
+    reference_source: ReferenceSource
+
+
+M = TypeVar("M", bound=BaseModel)
 
 
 def read_records(path: Path | str) -> list[ClauseRecord]:
     """Load records from a JSON Lines file."""
 
-    return list(iter_records(path))
+    return read_jsonl(path, ClauseRecord)
 
 
 def iter_records(path: Path | str) -> Iterator[ClauseRecord]:
+    return iter_jsonl(path, ClauseRecord)
+
+
+def read_jsonl(path: Path | str, model: type[M]) -> list[M]:
+    return list(iter_jsonl(path, model))
+
+
+def iter_jsonl(path: Path | str, model: type[M]) -> Iterator[M]:
     with Path(path).open(encoding="utf-8") as handle:
         for line in handle:
             line = line.strip()
             if line:
-                yield ClauseRecord.model_validate_json(line)
+                yield model.model_validate_json(line)
 
 
-def write_records(records: Iterable[ClauseRecord], path: Path | str) -> Path:
+def write_records(records: Iterable[BaseModel], path: Path | str) -> Path:
     """Write records to a JSON Lines file, creating parent directories."""
 
     path = Path(path)

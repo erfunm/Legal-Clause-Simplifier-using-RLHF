@@ -1,0 +1,17 @@
+# CPU smoke run: synthetic mini-CUAD fixture and mock references (never publishable).
+output_dir: data/smoke/processed
+
+extraction:
+  cuad_json: tests/fixtures/cuad_mini.json
+
+split:
+  dedup_threshold: 0.8
+  ratios: [0.6, 0.2, 0.2]
+  seed: 13
+
+references:
+  backend: mock
+
+golden:
+  output_dir: data/smoke/golden
+  size: 150

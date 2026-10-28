@@ -72,6 +72,17 @@ Both models are pinned to a Hub revision in the configs.
 
 Values are consistent within this project but are **not** directly comparable to EASSE's corpus-level SARI, and the README will say so. Unit tests pin the known properties: copying the source when the reference equals the source scores exactly 1/3; matching the reference scores 1.
 
+**Comparing with Hugging Face `evaluate` (added 2026-10-28).** `tests/test_sari_vs_hf.py` checks our score against `evaluate-metric/sari` (pinned revision `1f05a19b`; `evaluate`, `sacrebleu` and `sacremoses` are dev-only dependencies). It runs on 10 hand-written examples where none of the differences below applies, and the two agree to 1e-9 there. Anyone comparing our SARI with published numbers should expect these gaps:
+
+1. **Empty-set default (the big one).** When an operation has nothing to score at some n-gram order, HF defines 0/0 = 1 and we (like the Xu et al. reference code) score 0. "Nothing to score" means nothing kept, deleted or added, or nothing for the reference to keep or add. Examples:
+   - Prediction = source = reference scores **1.0 with HF and 1/3 with ours**.
+   - A deletion-only rewrite scores 1/12 higher with HF, because only the unigram add term is empty.
+   - More generally, HF scores heavy rewrites that share no 3- or 4-gram with the source higher than we do.
+2. **Keep recall.** HF uses summed counts (its "alleged bug fix") instead of the reference code's mean per-n-gram ratio. They differ only when an n-gram repeats.
+3. **Scale and tokenisation.** HF reports 0–100 after sacrebleu 13a tokenisation; we report 0–1 after a lowercase word/punctuation split.
+
+Each difference has its own test. Published SARI numbers (mostly EASSE or HF corpus-level) are therefore not comparable with ours. The evaluation report will label our SARI as "sentence-level SARI (Xu et al. reference formulation)" and will compare systems only against each other.
+
 ---
 
 ## ADR-004: Package, CLI, configs and tooling
@@ -158,3 +169,81 @@ transformers 5 folded `warmup_ratio` into `warmup_steps`, where a float in [0, 1
 **Date:** 2026-10-28 · **Status:** accepted (bug fix)
 
 textstat reports FKGL 0 for an empty string, and the old reward mapped FKGL ≤ 0 to the maximum bonus, so an empty completion earned the full readability reward. Empty or whitespace-only output now scores 0, with a regression test. Replacing the bonus with a target band, plus length/format penalties, is part of the Phase 3 reward work.
+
+---
+
+## ADR-010: How clauses are extracted from CUAD
+
+**Date:** 2026-10-28 · **Status:** accepted
+
+**Source.** `CUAD_v1/CUAD_v1.json` from `theatticusproject/cuad`, pinned to revision `a3c393f5`, downloaded with `hf_hub_download` and parsed directly. `load_dataset("cuad")` depended on a dataset loading script that `datasets` 5 no longer runs, and `theatticusproject/cuad-qa` is script-only.
+
+**Clause text** comes from each question's `answers[].text`, located by `answer_start`; offsets are verified against the context. The old code used `context`, which in CUAD is the *whole contract*. Spans for the same contract and category are merged when they overlap or are separated only by whitespace or light punctuation (up to 3 characters).
+
+**Category** is the suffix of the question id, `<contract title>__<Category>`. The old code compared the `question` field, a long "Highlight the parts (if any) of this contract related to ..." prompt, against category names, so nothing ever matched.
+
+**Categories (11).** Governing Law, Termination For Convenience, Renewal Term, Anti-Assignment, Change Of Control, Exclusivity, Non-Compete, Ip Ownership Assignment, Cap On Liability, Liquidated Damages and Post-Termination Services. The plan's "indemnification" is not a CUAD category.
+- I first picked Uncapped Liability. It shrank from 111 contracts to 37 clauses, because its spans are usually the same text as a Cap On Liability span in the same contract. It was replaced by Liquidated Damages and Post-Termination Services.
+- When one span carries several labels, it is kept once. The primary category follows the list order above; the other labels go in `extra_categories`.
+
+**Length filter.** Spans under 40 characters or 6 words are dropped (e.g. "Neither party may", "South Dakota"). So are spans over 1,500 characters (about the 99th percentile of CUAD span length; they would crowd the 1,024-token SFT context).
+
+**Counts on the pinned file** (data statistics, not model results; all in `stats.json`):
+- 510 contracts and 4,057 answer spans.
+- 3,678 spans after merging adjacent ones, 3,611 of them unique; 64 carry several labels.
+- 35 too short and 32 too long, leaving 3,544.
+- Near-duplicate removal (ADR-007) drops 155 more, leaving **3,389 clauses**.
+- Splits: 2,707 train / 340 dev / 342 test, across 369 / 45 / 42 contracts.
+
+Some CUAD spans are sentence fragments. They are kept, and the reference style guide says to simplify only what is there. The dataset card lists this as a limitation.
+
+---
+
+## ADR-011: Silver references via the Message Batches API
+
+**Date:** 2026-10-28 · **Status:** accepted; not yet run (needs an API key and your go-ahead)
+
+- **Model:** `claude-sonnet-5-5` (per the plan) with `effort: medium` and adaptive thinking left on, since Sonnet 5.5 rejects `thinking: disabled`. Output uses structured JSON (`output_config.format`, a single `simplified` field). No sampling parameters are sent; current models reject them. The style guide (`legal_simplifier.data.references.STYLE_GUIDE`) is the cached system prompt, and each request lists the clause's required entities.
+- **Batches API:** used for the 50% discount. Server-side refusal fallbacks are not available on Batches, so a refusal is recorded as a failure and never replaced.
+- **Caching:** each request is keyed by the SHA-256 of its parameters, which also serves as the batch `custom_id`. Successful responses are cached on disk, so re-runs cost nothing. Submitted batch ids are written to `pending_batches.jsonl` before polling, so a crashed run collects its results instead of paying for them again.
+- **Failures:** errored, expired, canceled and refused results, plus unparseable output (bad JSON, or a stop reason other than `end_turn`), are counted in `stats.json`. They are never cached and the clause gets no reference.
+- **Cost log:** `cost_log.jsonl` gets one line per billed result: token usage and cost at list batch prices. The price table (`llm/batch.py`) is the 2026-10-06 list price, so check it before budgeting. Nothing estimates spend in advance.
+- **Spending gate:** `lcs generate-references` with the Claude backend only does a dry run (counts requests, sends nothing) unless `--yes` is passed.
+- **Quality check:** every reference is checked for the clause's required entities. Those that drop any are listed in `reference_issues.jsonl`, and the count and mean entity recall go into `stats.json` and the card.
+- **Tests** use a fake client returning hand-written results in the Batches result format, validated with the SDK's own pydantic types. These are not recordings of real API responses; none were made.
+
+---
+
+## ADR-012: Golden set and review tool
+
+**Date:** 2026-10-28 · **Status:** accepted; review pending (yours)
+
+- **Selection:** 150 clauses from the **test split only**, spread as evenly across categories as availability allows (scarce categories give their share to the others), with a fixed seed.
+- **Storage:**
+  - `drafts.jsonl` is written once.
+  - `reviews.jsonl` is an append-only log: reviewer, UTC timestamp, action (approve / edit / reject), text before and after, and an optional note.
+  - `golden.jsonl` and `status.json` are re-materialised after every decision.
+  - Approving or editing sets `reference_source: human`, and the Claude draft is kept as `draft_reference`. Rejecting excludes the clause from the set but keeps its record.
+  - Rebuilding a golden set that already has reviews is refused.
+- **Status:** `unreviewed`, `partially_reviewed` or `reviewed`. It is reported in the dataset card, and Phase 4 results must state it.
+- **Review tool:** `lcs review --reviewer NAME` serves a local-only Gradio page (`share=False`). It shows the clause, the editable draft, entity chips (green = kept, red = missing, updated as you type) and the reading grade before and after. Its logic is plain functions with unit tests; the same pattern will be reused for the Phase 4 judge labels.
+
+---
+
+## ADR-013: SIMPLE-LAW is not used (no license)
+
+**Date:** 2026-10-28 · **Status:** accepted; revisit if the authors add a license
+
+SIMPLE-LAW (Rabbani et al., "Decode the Law", LREC 2026, aclanthology.org/2026.lrec-1.45) is public on GitHub (`mohammeddanishrabbani/Legal-Simplification-mrabbani`, CSV files under `data/`). But the repository has **no license file**: the GitHub API reports none, and the README's License section says "refer to the license file", which does not exist. Without a license the default is all rights reserved.
+
+Its simplified side was also generated with GPT-3.5-Turbo, and its sources are mostly Indian, US and UK statutes rather than contracts. Per the plan ("publicly available **and** licensed"), it is not added as an evaluation set. If the authors publish a permissive license, a loader is about an hour of work: a CSV of original/simplified pairs mapped to `ClauseRecord` with `reference_source: "human"`, though silver would arguably be the more honest label.
+
+---
+
+## ADR-014: Dataset card and Hub upload
+
+**Date:** 2026-10-28 · **Status:** accepted
+
+`lcs dataset-card` renders `data/processed/README.md` from `stats.json` and the golden status: splits, per-category counts, every filter threshold and count, reference backend/model/failures, entity recall, golden status, limitations, and the CUAD license and citation. No number in the card is typed by hand. A build with mock references gets a prominent "must not be published" warning.
+
+`lcs push-dataset --repo-id ...` creates a **private** dataset repo by default. It refuses mock (or unlabelled) references even with confirmation, and does nothing without `--yes`. It has not been run.

@@ -12,8 +12,11 @@ import random
 import re
 from collections.abc import Sequence
 from dataclasses import dataclass, field
+from typing import TypeVar
 
-from legal_simplifier.data.schema import ClauseRecord, Split
+from legal_simplifier.data.schema import ClauseCandidate, Split
+
+C = TypeVar("C", bound=ClauseCandidate)
 
 SPLITS: tuple[Split, ...] = ("train", "dev", "test")
 
@@ -59,8 +62,8 @@ class DedupReport:
 
 
 def deduplicate(
-    records: Sequence[ClauseRecord], *, threshold: float = 0.8, shingle_size: int = 5
-) -> tuple[list[ClauseRecord], DedupReport]:
+    records: Sequence[C], *, threshold: float = 0.8, shingle_size: int = 5
+) -> tuple[list[C], DedupReport]:
     """Drop records whose clause has Jaccard similarity >= ``threshold`` with a kept one.
 
     Records are visited in (contract_id, id) order, so the result does not
@@ -93,11 +96,11 @@ def deduplicate(
 
 
 def split_by_contract(
-    records: Sequence[ClauseRecord],
+    records: Sequence[C],
     *,
     ratios: tuple[float, float, float] = (0.8, 0.1, 0.1),
     seed: int = 13,
-) -> list[ClauseRecord]:
+) -> list[C]:
     """Assign every contract (and so all of its clauses) to exactly one split.
 
     Contracts are shuffled with ``seed`` and each goes to the split furthest
@@ -108,7 +111,7 @@ def split_by_contract(
     if len(ratios) != 3 or any(r < 0 for r in ratios) or abs(sum(ratios) - 1.0) > 1e-6:
         raise ValueError(f"ratios must be three non-negative numbers summing to 1, got {ratios}")
 
-    by_contract: dict[str, list[ClauseRecord]] = {}
+    by_contract: dict[str, list[C]] = {}
     for record in records:
         by_contract.setdefault(record.contract_id, []).append(record)
     contracts = sorted(by_contract)
@@ -127,7 +130,7 @@ def split_by_contract(
 
 
 def check_no_leakage(
-    records: Sequence[ClauseRecord], *, threshold: float = 0.8, shingle_size: int = 5
+    records: Sequence[ClauseCandidate], *, threshold: float = 0.8, shingle_size: int = 5
 ) -> list[str]:
     """Return human-readable problems: contracts or near-duplicate clauses shared across splits."""
 
@@ -157,7 +160,7 @@ def check_no_leakage(
     return problems
 
 
-def split_counts(records: Sequence[ClauseRecord]) -> dict[str, dict[str, int]]:
+def split_counts(records: Sequence[ClauseCandidate]) -> dict[str, dict[str, int]]:
     """Clause and contract counts per split."""
 
     result: dict[str, dict[str, int]] = {}

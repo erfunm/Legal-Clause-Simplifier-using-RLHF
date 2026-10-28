@@ -12,6 +12,9 @@ dist/
 data/raw/*
 data/processed/*
 data/smoke/
+# Cached Claude API responses and the cost log; golden-set drafts and review log
+data/cache/
+data/golden/
 !data/**/.gitkeep
 checkpoints/
 results/*

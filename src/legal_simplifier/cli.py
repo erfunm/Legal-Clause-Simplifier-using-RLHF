@@ -28,21 +28,161 @@ def _not_yet(stage: str, phase: int) -> None:
     raise typer.Exit(code=2)
 
 
+DataConfigOption = Annotated[
+    Path, typer.Option("--config", help="Data pipeline YAML (configs/data.yaml).")
+]
+
+
+def _data_config(path: Path):  # returns DataPrepConfig (imported lazily)
+    from legal_simplifier.config import DataPrepConfig, load_config
+
+    return load_config(path, DataPrepConfig)
+
+
 @app.command("prepare-data")
 def prepare_data(
-    input_path: Annotated[Path, typer.Option("--input", help="Clause records (JSONL) to split.")],
-    output_dir: Annotated[Path, typer.Option("--output-dir")] = Path("data/processed"),
-    dedup_threshold: Annotated[
-        float, typer.Option(help="Jaccard similarity treated as duplicate.")
-    ] = 0.8,
-    seed: Annotated[int, typer.Option()] = 13,
+    config: DataConfigOption = Path("configs/data.yaml"),
+    input_path: Annotated[
+        Path | None,
+        typer.Option(
+            "--input", help="Split existing records (JSONL with references) instead of CUAD."
+        ),
+    ] = None,
+    output_dir: Annotated[Path | None, typer.Option(help="Override output_dir.")] = None,
 ) -> None:
-    """Deduplicate clause records and write contract-level train/dev/test splits."""
+    """Extract CUAD clauses, filter, deduplicate and split them by contract."""
 
-    from legal_simplifier.data.prepare import prepare_from_jsonl
+    from legal_simplifier.data.prepare import prepare_from_cuad, prepare_from_jsonl
 
-    result = prepare_from_jsonl(input_path, output_dir, dedup_threshold=dedup_threshold, seed=seed)
-    typer.echo(f"Wrote splits and stats to {result.output_dir}")
+    cfg = _data_config(config)
+    out = output_dir or cfg.output_dir
+    split_kwargs = {
+        "dedup_threshold": cfg.split.dedup_threshold,
+        "ratios": cfg.split.ratios,
+        "seed": cfg.split.seed,
+    }
+    if input_path is not None:
+        result = prepare_from_jsonl(input_path, out, **split_kwargs)
+        typer.echo(f"Wrote splits and stats to {result.output_dir}")
+        return
+    ex = cfg.extraction
+    extra = {"categories": ex.categories} if ex.categories else {}
+    result = prepare_from_cuad(
+        out,
+        cuad_json=ex.cuad_json,
+        min_chars=ex.min_chars,
+        min_words=ex.min_words,
+        max_chars=ex.max_chars,
+        **extra,
+        **split_kwargs,
+    )
+    typer.echo(f"Wrote {len(result.records)} clause candidates and stats to {result.output_dir}")
+
+
+@app.command("generate-references")
+def generate_references(
+    config: DataConfigOption = Path("configs/data.yaml"),
+    backend: Annotated[str | None, typer.Option(help="mock | claude (overrides config).")] = None,
+    dry_run: Annotated[
+        bool, typer.Option(help="Only report how many requests would be sent.")
+    ] = False,
+    yes: Annotated[
+        bool, typer.Option("--yes", help="Confirm submitting paid API requests.")
+    ] = False,
+) -> None:
+    """Attach silver references to the clause candidates and write train/dev/test files."""
+
+    from legal_simplifier.data import references
+
+    cfg = _data_config(config)
+    if backend is not None:
+        cfg.references.backend = backend
+    refused = cfg.references.backend == "claude" and not yes and not dry_run
+    dry_run = dry_run or refused
+    generator = references.make_generator(cfg.references, dry_run=dry_run)
+    _, report = references.generate_references(cfg.output_dir, generator)
+    if report.batch is not None:
+        typer.echo(references.summarise_run(report.batch))
+    if dry_run:
+        typer.echo(
+            "Nothing was sent. Re-run with --yes to submit the requests above "
+            "(this calls the paid Anthropic API).",
+            err=True,
+        )
+        raise typer.Exit(code=1 if refused else 0)
+    typer.echo(
+        f"{report.n_with_reference} of {report.n_candidates} clauses have references "
+        f"({report.backend}); failures: {report.failures or 'none'}"
+    )
+
+
+@app.command("build-golden")
+def build_golden(config: DataConfigOption = Path("configs/data.yaml")) -> None:
+    """Select the golden test set (marked unreviewed) from the test split."""
+
+    from legal_simplifier.data.golden import build_golden as build
+    from legal_simplifier.data.schema import read_records
+
+    cfg = _data_config(config)
+    test = read_records(cfg.output_dir / "test.jsonl")
+    items = build(test, cfg.golden.output_dir, size=cfg.golden.size, seed=cfg.golden.seed)
+    typer.echo(f"Wrote {len(items)} unreviewed golden items to {cfg.golden.output_dir}")
+
+
+@app.command("review")
+def review(
+    reviewer: Annotated[str, typer.Option(help="Your name, recorded with every decision.")],
+    config: DataConfigOption = Path("configs/data.yaml"),
+    port: Annotated[int, typer.Option()] = 7860,
+) -> None:
+    """Open the golden-set review page (local only)."""
+
+    from legal_simplifier.data.review_app import build_app
+
+    cfg = _data_config(config)
+    build_app(cfg.golden.output_dir, reviewer).launch(server_port=port, share=False)
+
+
+@app.command("dataset-card")
+def dataset_card(config: DataConfigOption = Path("configs/data.yaml")) -> None:
+    """Write the dataset card (README.md) from stats.json and the golden-set status."""
+
+    from legal_simplifier.data.card import write_dataset_card
+
+    cfg = _data_config(config)
+    typer.echo(f"Wrote {write_dataset_card(cfg.output_dir, cfg.golden.output_dir)}")
+
+
+@app.command("push-dataset")
+def push_dataset(
+    repo_id: Annotated[
+        str, typer.Option(help="Hub dataset repo, e.g. user/legal-clause-simplification.")
+    ],
+    config: DataConfigOption = Path("configs/data.yaml"),
+    public: Annotated[
+        bool, typer.Option(help="Create the repo as public (default private).")
+    ] = False,
+    yes: Annotated[bool, typer.Option("--yes", help="Confirm publishing to the Hub.")] = False,
+) -> None:
+    """Upload the processed dataset and card to the Hugging Face Hub. Refuses mock references."""
+
+    from legal_simplifier.data.card import PublishRefused
+    from legal_simplifier.data.card import push_dataset as push
+    from legal_simplifier.eval.guards import UnpublishableResultsError
+
+    cfg = _data_config(config)
+    try:
+        url = push(
+            cfg.output_dir,
+            repo_id,
+            confirm=yes,
+            private=not public,
+            golden_dir=cfg.golden.output_dir,
+        )
+    except (PublishRefused, UnpublishableResultsError) as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+    typer.echo(f"Pushed to {url}")
 
 
 @app.command("train-sft")

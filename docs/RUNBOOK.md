@@ -11,7 +11,45 @@ make test-all && make smoke
 
 ## 1. Data and references (Phase 1)
 
-To be written with the CUAD extraction and Claude reference generation. Until real references exist, every record is `reference_source: mock`, and `lcs report` refuses to publish anything built from them.
+**Needs:** an Anthropic API key with Batches access. Hugging Face login is optional; CUAD downloads anonymously.
+
+```bash
+# 1a. Extract, filter, deduplicate and split CUAD clauses (free, CPU, about 2 minutes).
+uv run lcs prepare-data --config configs/data.yaml
+#     -> data/processed/candidates.jsonl, stats.json, removed_near_duplicates.jsonl
+
+# 1b. See how many requests would be sent. Nothing is sent without --yes.
+export ANTHROPIC_API_KEY=...            # or `ant auth login`
+uv run lcs generate-references --config configs/data.yaml --dry-run
+
+# 1c. Generate the silver references (PAID: claude-sonnet-5-5 via the Batches API).
+#     Responses are cached under data/cache/anthropic/, so re-running is free; an
+#     interrupted run resumes its submitted batches instead of resubmitting.
+uv run lcs generate-references --config configs/data.yaml --yes
+#     -> data/processed/{train,dev,test}.jsonl, reference_issues.jsonl
+#     -> spend so far: data/cache/anthropic/cost_log.jsonl (one line per billed result)
+
+# 1d. Select the golden set (150 test clauses, marked unreviewed).
+uv run lcs build-golden --config configs/data.yaml
+```
+
+**Human step: review the golden set.** This opens a local page on http://127.0.0.1:7860; you approve, edit or reject each clause:
+
+```bash
+uv run lcs review --config configs/data.yaml --reviewer "Your Name"
+```
+
+Every decision is appended to `data/golden/reviews.jsonl` with your name and the time, and `data/golden/status.json` tracks progress. Until the review is complete, results computed on the golden set are labelled unreviewed or partially reviewed. Start with the clauses listed in `data/processed/reference_issues.jsonl`, whose drafts drop a required entity.
+
+```bash
+# 1e. Write the dataset card from the stats.
+uv run lcs dataset-card --config configs/data.yaml
+
+# 1f. PUBLISHING (only when you decide to): a private dataset repo by default.
+#     Refuses mock references; does nothing without --yes.
+huggingface-cli login
+uv run lcs push-dataset --config configs/data.yaml --repo-id <user>/legal-clause-simplification --yes
+```
 
 ## 2. Supervised fine-tuning (Phase 2)
 
