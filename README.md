@@ -1,52 +1,65 @@
-# Legal Clause Simplifier using RLHF
+# Legal Clause Simplifier
 
-This repository hosts the SageMaker-friendly implementation of the **Legal Clause
-Simplifier** project. The end goal is to fine-tune a language model that rewrites
-legal clauses into plain English while preserving critical entities. The
-workflow follows a staged approach:
+Post-training a small open model (Qwen3.5-0.8B) to rewrite legal contract clauses in plain English while keeping every party, date, amount, duration and obligation. The pipeline is SFT → GRPO/DPO with a verifiable composite reward, evaluated on CUAD clauses.
 
-1. Prepare the CUAD dataset and bootstrap simplified references.
-2. Train a supervised baseline model.
-3. Optimise the model further using PPO-based RLHF.
-4. Evaluate quality improvements and surface a Streamlit demo.
+> **Status:** in development. The engineering foundation is in place: package, configs, reward components, contract-level data splitting, SFT, tests and CI. Data generation, RL training, evaluation and serving are being added phase by phase. See [`docs/decisions.md`](docs/decisions.md) for the design decisions so far.
 
-The current commit establishes the project scaffold so each stage can be
-implemented incrementally.
+## Results: pending first full run
 
-## Repository layout
+No model has been trained on real data yet, so this README has no metrics. When the full pipeline runs, `lcs report` will generate this section from `results/`. It will compare base, SFT, SFT+DPO, SFT+GRPO, a frontier API and copy/truncate baselines on:
 
-```
-legal-simplifier-rlhf/
-├── README.md
-├── requirements.txt
-├── app.py
-├── configs/
-│   ├── ppo.yaml
-│   └── sft.yaml
-├── data/
-│   ├── examples/
-│   ├── processed/
-│   └── raw/
-└── scripts/
-    ├── data_prep.py
-    ├── evaluate.py
-    ├── ppo_train.py
-    ├── reward_fn.py
-    ├── sft_train.py
-    └── utils.py
+- SARI
+- BERTScore
+- reading grade (FKGL)
+- entity-preservation recall
+- NLI faithfulness
+- a human-validated LLM judge
+
+`lcs report` refuses to run on mock references or smoke-test runs, so nothing in this section can come from placeholder data.
+
+## Quickstart (CPU)
+
+```bash
+uv sync --all-extras   # or: make install
+make lint typecheck    # ruff + pyright
+make test              # fast unit tests
+make test-all          # plus tests that load a ~5M-parameter random Qwen3.5
+make smoke             # data prep + SFT end to end on fixture data, under a minute on CPU
 ```
 
-Each Python script currently exposes a minimal CLI entry-point to simplify
-SageMaker job integration. Functional logic will be populated in subsequent
-steps.
+`make smoke` uses synthetic fixture clauses with mock references and a tiny random-weight model. It proves the pipeline wires together; its outputs mean nothing and are never reported.
 
-## Next steps
+## CLI
 
-* Populate `configs/sft.yaml` and `configs/ppo.yaml` with concrete hyperparameters.
-* Implement CUAD ingestion and simplification generation in `scripts/data_prep.py`.
-* Fill in training and evaluation logic.
-* Replace the placeholder Streamlit message with live inference against the PPO
-  checkpoint.
+| Command | What it does |
+|---|---|
+| `lcs prepare-data --input records.jsonl` | Remove near-duplicates, split by contract into train/dev/test, check for leakage, write `stats.json` |
+| `lcs train-sft --config configs/sft.yaml` | Supervised fine-tuning with TRL `SFTTrainer` (chat template, completion-only loss) |
+| `lcs report` | Build results tables (refuses mock or smoke data) |
+| `lcs train-grpo`, `lcs train-dpo`, `lcs evaluate`, `lcs serve` | Coming in later phases |
 
-> ⚠️ **Important:** No legal advice is provided. The forthcoming model is a
-> research prototype intended for educational purposes only.
+## Project structure
+
+```
+src/legal_simplifier/
+├── cli.py            # `lcs` entry point (Typer)
+├── config.py         # typed experiment configs (pydantic, one YAML per experiment)
+├── prompts.py        # chat prompts shared by training, eval and serving
+├── data/             # record schema, entity extraction, dedup + contract-level splits
+├── rewards/          # SARI, BERTScore, readability, entity penalty, composite reward
+├── training/         # SFT (GRPO and DPO to follow)
+├── eval/             # publishing guards and reporting
+├── serving/          # inference service (to follow)
+└── aws.py            # optional S3 helpers (`aws` extra)
+configs/              # real-run configs; configs/smoke/ for tiny CPU runs
+tests/                # unit tests and tiny-model integration tests
+docs/                 # decisions log, runbook
+```
+
+## Responsible use
+
+This is a research and portfolio project, **not legal advice**. Simplifications can drop or distort obligations. Always read the original clause.
+
+## License
+
+Code: MIT (see [LICENSE](LICENSE)). The project will use CUAD (CC BY 4.0, The Atticus Project).
