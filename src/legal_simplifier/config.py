@@ -22,6 +22,8 @@ class StrictModel(BaseModel):
 class ExperimentConfig(StrictModel):
     name: str
     seed: int = 42
+    smoke: bool = False
+    """A CPU smoke run with a tiny random model. Its outputs are never results."""
 
 
 class DataConfig(StrictModel):
@@ -62,6 +64,60 @@ class SFTTrainingConfig(StrictModel):
     save_total_limit: int | None = 2
     report_to: list[str] = Field(default_factory=lambda: ["none"])
     use_cpu: bool = False
+    save_merged: bool = True
+    """With LoRA, also write base + adapter merged into plain weights under ``merged/``."""
+
+
+# Every projection in Qwen3.5's two layer types: full attention (q/k/v/o), Gated DeltaNet
+# linear attention (in_proj_qkv, in_proj_z, out_proj) and the MLP. Left out on purpose:
+# in_proj_a / in_proj_b (per-head gate scalars, a few outputs wide), conv1d, and the
+# tied embeddings / lm_head. See docs/decisions.md, ADR-016.
+QWEN35_LORA_TARGETS = [
+    "q_proj",
+    "k_proj",
+    "v_proj",
+    "o_proj",
+    "in_proj_qkv",
+    "in_proj_z",
+    "out_proj",
+    "gate_proj",
+    "up_proj",
+    "down_proj",
+]
+
+
+class LoRAConfig(StrictModel):
+    """PEFT LoRA adapter. ``enabled: false`` trains every weight instead."""
+
+    enabled: bool = True
+    r: int = 16
+    alpha: int = 32
+    dropout: float = 0.05
+    target_modules: list[str] = Field(default_factory=lambda: list(QWEN35_LORA_TARGETS))
+    """Module-name suffixes. Each one must match at least one linear layer."""
+    use_rslora: bool = False
+
+
+class QuantizationConfig(StrictModel):
+    """QLoRA: load the frozen base in 4 bit with bitsandbytes (needs a CUDA GPU)."""
+
+    load_in_4bit: bool = False
+    quant_type: str = Field(default="nf4", pattern="^(nf4|fp4)$")
+    double_quant: bool = True
+    compute_dtype: str = Field(default="bfloat16", pattern="^(bfloat16|float16|float32)$")
+
+
+class TrackingConfig(StrictModel):
+    """Experiment tracking. Keys come from the environment (``WANDB_API_KEY``), never config."""
+
+    backend: str = Field(default="none", pattern="^(none|wandb|trackio)$")
+    project: str = "legal-clause-simplifier"
+    wandb_entity: str | None = None
+    wandb_mode: str = Field(default="online", pattern="^(online|offline)$")
+    trackio_dir: Path | None = None
+    """Local Trackio store; ``None`` keeps Trackio's default."""
+    trackio_space_id: str | None = None
+    """Setting this publishes the dashboard as a Hugging Face Space: ask first."""
 
 
 class SFTConfigFile(StrictModel):
@@ -70,7 +126,16 @@ class SFTConfigFile(StrictModel):
     experiment: ExperimentConfig
     data: DataConfig = Field(default_factory=DataConfig)
     model: ModelConfig = Field(default_factory=ModelConfig)
+    lora: LoRAConfig = Field(default_factory=LoRAConfig)
+    quantization: QuantizationConfig = Field(default_factory=QuantizationConfig)
+    tracking: TrackingConfig = Field(default_factory=TrackingConfig)
     training: SFTTrainingConfig = Field(default_factory=SFTTrainingConfig)
+
+    @model_validator(mode="after")
+    def _qlora_needs_lora(self) -> SFTConfigFile:
+        if self.quantization.load_in_4bit and not self.lora.enabled:
+            raise ValueError("quantization.load_in_4bit (QLoRA) requires lora.enabled")
+        return self
 
 
 class RewardWeights(StrictModel):
