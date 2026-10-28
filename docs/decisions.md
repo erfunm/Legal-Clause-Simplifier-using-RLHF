@@ -267,3 +267,51 @@ Its simplified side was also generated with GPT-3.5-Turbo, and its sources are m
   - The ceiling is `max_tokens` on every request, which billing cannot exceed.
   - The range is wide on purpose. Once a pilot has run, the dry run also reports the measured mean output per request from the cost log and the cost based on it. That figure is the one to plan with.
 - *Caching:* the low end assumes one prefix write followed by cache hits; the high end assumes every request writes the cache. Batch caching is best-effort.
+
+---
+
+## ADR-016: LoRA on every projection of both Qwen3.5 layer types; text-only base
+
+**Date:** 2026-10-28 · **Status:** accepted
+
+**Architecture.** Qwen3.5-0.8B has 24 layers in a repeating pattern of three Gated DeltaNet (linear attention) layers to one full-attention layer. The hidden size is 1024, the vocabulary 248,320 and the embeddings are tied. The two layer types have different projection names, so the usual `q/k/v/o + MLP` list would leave three quarters of the attention layers without an adapter.
+
+**Targets** (`QWEN35_LORA_TARGETS`, set in `configs/sft.yaml`):
+- full attention: `q_proj`, `k_proj`, `v_proj`, `o_proj`
+- DeltaNet: `in_proj_qkv`, `in_proj_z`, `out_proj`
+- MLP: `gate_proj`, `up_proj`, `down_proj`
+
+**Left out:**
+- `in_proj_a` / `in_proj_b`: their outputs are per-head gate scalars a few units wide, so a rank-16 adapter would be larger than the layer.
+- `conv1d`: not a linear layer.
+- `lm_head` and `embed_tokens`: tied, and at a 248k vocabulary an adapter or `modules_to_save` there would cost more than the rest of the adapter combined.
+
+**Checking coverage.** PEFT matches target names by suffix and only errors when *nothing* matches, so a typo silently trains fewer layers. `check_lora_coverage` fails if any configured target matches no linear layer. It writes the wrapped and left-out layer patterns to `lora.json`. The CPU test asserts the exact set of wrapped projections, that every layer index has an adapter, and that only LoRA parameters are trainable. It uses the tiny random Qwen3.5, which has the same two layer types and names. The Qwen3-1.7B fallback has no DeltaNet layers, so its config comment carries its own target list.
+
+**Text-only base.** The checkpoint declares `Qwen3_5ForConditionalGeneration`, and TRL loads `config.architectures[0]` when given a model id, which would bring in the vision tower. The task is text only, so `load_base_model` loads `AutoModelForCausalLM` (`Qwen3_5ForCausalLM`) and passes the model object to `SFTTrainer`. Two consequences:
+- The adapter's module paths are the causal LM's (`model.layers.N...`), so it loads onto `AutoModelForCausalLM` / `AutoPeftModelForCausalLM`, not onto the multimodal class.
+- `merged/` is a text-only checkpoint.
+
+The model card says both. `adapter_config.json` records the base revision.
+
+**Hyperparameters.** r 16, alpha 32, dropout 0.05, learning rate 2e-4 (a LoRA rate, not the 2e-5 used earlier for full fine-tuning), effective batch 16, 3 epochs and cosine decay. With 2,707 training clauses that is about 510 optimizer steps. These are standard LoRA starting points, not tuned values. `lora.enabled: false` still gives full fine-tuning.
+
+---
+
+## ADR-017: SFT run outputs, QLoRA, tracking and GPU entry points
+
+**Date:** 2026-10-28 · **Status:** accepted
+
+- **Outputs:**
+  - `adapter/` is what training saves.
+  - `merged/` reloads the base in its training dtype (bf16, never 4 bit), applies the adapter and calls `merge_and_unload`. It is the checkpoint the Phase 3 trainers and serving load.
+  - Cards are rendered from `experiment.json`, `lora.json`, `metrics.json` and the data's `stats.json`, so no value in them is typed by hand.
+  - Training loss appears as a training signal, and is hidden for smoke runs. Evaluation stays "Results: pending" until `lcs report`.
+  - Smoke runs (`experiment.smoke: true`) and mock or unlabelled references get a do-not-publish banner.
+- **QLoRA:** `quantization.load_in_4bit` builds an NF4 double-quant `BitsAndBytesConfig` (the `qlora` extra). It is off by default, because the 0.8B base in bf16 plus LoRA fits easily on 24 GB and 4-bit only costs quality there; it is useful for the 1.7B fallback on a 16 GB GPU. PEFT's `prepare_model_for_kbit_training` is not called. TRL already enables input gradients for checkpointing and casts the adapter, and the PEFT helper's fp32 `lm_head` upcast is expensive with a 248k vocabulary. Logits memory: TRL's SFT computes the loss through its chunked fused LM head, so the full `[batch, seq, 248k]` logits tensor is not materialised (see ADR-002).
+- **Tracking:** `tracking.backend` is `trackio` in the real config (local store, no account), or `wandb` (`WANDB_API_KEY` from the environment or a Modal/Colab/Kaggle secret), or `none`. Trackio publishes to a Hugging Face Space or a server when `TRACKIO_SPACE_ID`, `TRACKIO_SERVER_URL` or `TRACKIO_REGISTRY_BUCKET_ID` is set. Because publishing needs the user's approval, an ambient value of any of these is refused unless the config names `tracking.trackio_space_id` explicitly.
+- **GPU entry points:**
+  - `scripts/modal_sft.py` builds an image from an **allowlist** of repo files (`pyproject.toml`, `README.md`, `src/`, `configs/`), so local data and untracked files never leave the machine. It installs CUDA torch from PyPI (the lockfile pins the CPU build for CI), mounts one Volume that holds data, checkpoints, the HF cache and Trackio, and runs on one L4. A separate function carries the W&B secret, so the default needs no secrets.
+  - The notebook supports Colab and Kaggle, and three data sources: an upload, a Kaggle dataset, or the private Hub dataset.
+  - Both call `adapt_precision`, which switches to fp16 autocast on fp32 weights for GPUs without bf16 (T4, P100); fp16 weights are avoided because of overflow risk.
+  - Tests import the Modal script against a stub `modal` module, compile every notebook cell, and run the Modal function body on CPU with the tiny model.

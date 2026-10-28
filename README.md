@@ -4,9 +4,10 @@ Post-training a small open model (Qwen3.5-0.8B) to rewrite legal contract clause
 
 > **Status:** in development. In place so far:
 > - the engineering foundation: package, configs, reward components, SFT, tests and CI;
-> - the data pipeline: CUAD clause extraction, contract-level splits, silver references through the Claude Batches API, a golden test set and the tool for reviewing it.
+> - the data pipeline: CUAD clause extraction, contract-level splits, silver references through the Claude Batches API, a golden test set and the tool for reviewing it;
+> - the SFT baseline: LoRA/QLoRA with PEFT, Trackio or W&B logging, adapter and merged weights, model cards, and a Colab/Kaggle notebook and Modal script for the GPU run.
 >
-> The real reference run and the golden-set review have not happened yet. RL training, evaluation and serving are being added phase by phase. See [`docs/decisions.md`](docs/decisions.md) for the design decisions and [`docs/RUNBOOK.md`](docs/RUNBOOK.md) for the steps that need keys, a GPU or a person.
+> The real reference run, the golden-set review and the GPU training run have not happened yet. RL training, evaluation and serving are being added phase by phase. See [`docs/decisions.md`](docs/decisions.md) for the design decisions and [`docs/RUNBOOK.md`](docs/RUNBOOK.md) for the steps that need keys, a GPU or a person.
 
 ## Results: pending first full run
 
@@ -28,7 +29,7 @@ uv sync --all-extras   # or: make install
 make lint typecheck    # ruff + pyright
 make test              # fast unit tests
 make test-all          # plus tests that load a ~5M-parameter random Qwen3.5
-make smoke             # CUAD-format fixture -> mock refs -> golden set -> card -> SFT, under a minute on CPU
+make smoke             # CUAD-format fixture -> mock refs -> golden set -> card -> LoRA SFT + merge, about a minute on CPU
 ```
 
 `make smoke` uses a synthetic file in CUAD's layout, mock references and a tiny random-weight model. It proves the pipeline wires together; its outputs mean nothing and are never reported.
@@ -41,7 +42,8 @@ make smoke             # CUAD-format fixture -> mock refs -> golden set -> card 
 | `lcs generate-references` | Silver references: `mock` offline, or Claude through the Batches API (dry run with a cost range unless `--yes`; `--limit N` for a pilot) |
 | `lcs build-golden` / `lcs review` | Select the 150-clause golden test set and review it in a local Gradio page |
 | `lcs dataset-card` / `lcs push-dataset` | Render the dataset card from the stats; upload to the Hub (private, needs `--yes`, refuses mock data) |
-| `lcs train-sft --config configs/sft.yaml` | Supervised fine-tuning with TRL `SFTTrainer` (chat template, completion-only loss) |
+| `lcs train-sft --config configs/sft.yaml` | SFT with TRL `SFTTrainer` and a LoRA/QLoRA adapter (chat template, completion-only loss); saves `adapter/`, `merged/` and model cards |
+| `lcs merge-adapter` / `lcs model-card` | Merge a LoRA adapter into its base; (re)write a run's model cards from its own files |
 | `lcs report` | Build results tables (refuses mock or smoke data) |
 | `lcs train-grpo`, `lcs train-dpo`, `lcs evaluate`, `lcs serve` | Coming in later phases |
 
@@ -55,11 +57,13 @@ src/legal_simplifier/
 ├── data/             # CUAD extraction, entities, dedup + splits, references, golden set, review tool, card
 ├── llm/              # Claude Message Batches runner (cache, resume, cost log)
 ├── rewards/          # SARI, BERTScore, readability, entity penalty, composite reward
-├── training/         # SFT (GRPO and DPO to follow)
+├── training/         # SFT with LoRA/QLoRA, tracking, model cards (GRPO and DPO to follow)
 ├── eval/             # publishing guards and reporting
 ├── serving/          # inference service (to follow)
 └── aws.py            # optional S3 helpers (`aws` extra)
 configs/              # real-run configs; configs/smoke/ for tiny CPU runs
+notebooks/            # Colab/Kaggle notebooks for the GPU stages
+scripts/              # Modal scripts for the GPU stages (one L4)
 tests/                # unit tests and tiny-model integration tests
 docs/                 # decisions log, runbook
 ```
