@@ -247,3 +247,23 @@ Its simplified side was also generated with GPT-3.5-Turbo, and its sources are m
 `lcs dataset-card` renders `data/processed/README.md` from `stats.json` and the golden status: splits, per-category counts, every filter threshold and count, reference backend/model/failures, entity recall, golden status, limitations, and the CUAD license and citation. No number in the card is typed by hand. A build with mock references gets a prominent "must not be published" warning.
 
 `lcs push-dataset --repo-id ...` creates a **private** dataset repo by default. It refuses mock (or unlabelled) references even with confirmation, and does nothing without `--yes`. It has not been run.
+
+---
+
+## ADR-015: Reference pilot and dry-run cost estimates
+
+**Date:** 2026-10-28 · **Status:** accepted
+
+**Pilot.** `generate-references --limit N` runs a category-balanced sample: the same round-robin as the golden set, now shared in `data/sampling.py`, with seed `references.pilot_seed = 21`. Results go to `pilot_references.jsonl`, `pilot_issues.jsonl` and `stats.json["pilot"]`, never to the split files, so a 20-clause pilot cannot be mistaken for the dataset. The pilot and the full run build identical requests, so the full run gets the pilot's responses from the cache and does not pay for them twice. If the style guide changes after the pilot, the requests change and are paid again; that is intended.
+
+**Price check.** `PRICES_PER_MTOK` was checked on 2026-10-28 against https://platform.claude.com/docs/en/about-claude/pricing, and the URL is now in a comment. One value was wrong: Sonnet 5.5 cache hits are **$0.10/MTok** (0.05x base input), not $0.20. Opus 5.5 ($4 / $20, cache hits $0.20), Sonnet 5.5 input and output ($2 / $10), 5-minute cache writes (1.25x) and the Batch discount (50%, which stacks with the cache multipliers) were right. The error only affected logged cost for cached system-prompt reads, and no paid run had happened.
+
+**Estimate.** `--dry-run` prints an input-token count, an output-token range and a dollar range, for the requests a real run would submit (cached and pending requests are excluded).
+- *Input tokens* are counted in one of two ways, and the output says which:
+  - `--count-tokens local` (the default; offline): characters ÷ 4.0 to characters ÷ 2.5. Claude's tokenizer is not distributed, so this is a range.
+  - `--count-tokens api`: `messages.count_tokens`, which is free, sends no generations, and uses the model's own tokenizer. It has its own requests-per-minute limit, so runs over 100 requests count an evenly spaced sample of 100 and scale up the mean.
+- *Output tokens* cannot be counted in advance, because they include adaptive thinking.
+  - The floor is a rewrite about as long as the clause with no thinking.
+  - The ceiling is `max_tokens` on every request, which billing cannot exceed.
+  - The range is wide on purpose. Once a pilot has run, the dry run also reports the measured mean output per request from the cost log and the cost based on it. That figure is the one to plan with.
+- *Caching:* the low end assumes one prefix write followed by cache hits; the high end assumes every request writes the cache. Batch caching is best-effort.

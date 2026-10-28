@@ -84,25 +84,59 @@ def generate_references(
     config: DataConfigOption = Path("configs/data.yaml"),
     backend: Annotated[str | None, typer.Option(help="mock | claude (overrides config).")] = None,
     dry_run: Annotated[
-        bool, typer.Option(help="Only report how many requests would be sent.")
+        bool,
+        typer.Option(help="Send nothing; print the request count and an estimated cost range."),
     ] = False,
     yes: Annotated[
         bool, typer.Option("--yes", help="Confirm submitting paid API requests.")
     ] = False,
+    limit: Annotated[
+        int | None,
+        typer.Option(
+            min=1,
+            help="Pilot: only a category-balanced sample of N clauses (seed: "
+            "references.pilot_seed). Writes pilot_references.jsonl, not the split files.",
+        ),
+    ] = None,
+    count_tokens: Annotated[
+        str,
+        typer.Option(
+            help="How --dry-run counts input tokens: local (offline approximation) or api "
+            "(Anthropic's free token-counting endpoint; needs ANTHROPIC_API_KEY).",
+        ),
+    ] = "local",
 ) -> None:
     """Attach silver references to the clause candidates and write train/dev/test files."""
 
     from legal_simplifier.data import references
+    from legal_simplifier.llm.estimate import describe
 
+    if count_tokens not in ("local", "api"):
+        raise typer.BadParameter("must be local or api", param_hint="--count-tokens")
     cfg = _data_config(config)
+    if not (cfg.output_dir / references.CANDIDATES_FILE).exists():
+        typer.echo(
+            f"error: {cfg.output_dir / references.CANDIDATES_FILE} not found; "
+            "run `lcs prepare-data` first.",
+            err=True,
+        )
+        raise typer.Exit(code=1)
     if backend is not None:
         cfg.references.backend = backend
     refused = cfg.references.backend == "claude" and not yes and not dry_run
     dry_run = dry_run or refused
-    generator = references.make_generator(cfg.references, dry_run=dry_run)
-    _, report = references.generate_references(cfg.output_dir, generator)
+    generator = references.make_generator(
+        cfg.references,
+        dry_run=dry_run,
+        count_tokens="api" if count_tokens == "api" else "local",
+    )
+    _, report = references.generate_references(
+        cfg.output_dir, generator, limit=limit, seed=cfg.references.pilot_seed
+    )
     if report.batch is not None:
         typer.echo(references.summarise_run(report.batch))
+    if report.estimate is not None:
+        typer.echo(describe(report.estimate))
     if dry_run:
         typer.echo(
             "Nothing was sent. Re-run with --yes to submit the requests above "
@@ -114,6 +148,8 @@ def generate_references(
         f"{report.n_with_reference} of {report.n_candidates} clauses have references "
         f"({report.backend}); failures: {report.failures or 'none'}"
     )
+    if limit is not None:
+        typer.echo(f"Pilot written to {cfg.output_dir / references.PILOT_FILE}")
 
 
 @app.command("build-golden")

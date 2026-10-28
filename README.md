@@ -38,7 +38,7 @@ make smoke             # CUAD-format fixture -> mock refs -> golden set -> card 
 | Command | What it does |
 |---|---|
 | `lcs prepare-data` | Extract clauses from CUAD (pinned revision), filter, remove near-duplicates, split by contract, write `stats.json` |
-| `lcs generate-references` | Silver references: `mock` offline, or Claude through the Batches API (dry run unless `--yes`) |
+| `lcs generate-references` | Silver references: `mock` offline, or Claude through the Batches API (dry run with a cost range unless `--yes`; `--limit N` for a pilot) |
 | `lcs build-golden` / `lcs review` | Select the 150-clause golden test set and review it in a local Gradio page |
 | `lcs dataset-card` / `lcs push-dataset` | Render the dataset card from the stats; upload to the Hub (private, needs `--yes`, refuses mock data) |
 | `lcs train-sft --config configs/sft.yaml` | Supervised fine-tuning with TRL `SFTTrainer` (chat template, completion-only loss) |

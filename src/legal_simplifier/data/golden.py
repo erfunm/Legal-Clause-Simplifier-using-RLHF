@@ -17,7 +17,6 @@ reference, and results computed on the set must say so.
 from __future__ import annotations
 
 import json
-import random
 from collections import Counter
 from collections.abc import Sequence
 from datetime import UTC, datetime
@@ -26,6 +25,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict
 
+from legal_simplifier.data.sampling import balanced_sample
 from legal_simplifier.data.schema import ClauseRecord, ReferenceSource, read_jsonl, write_records
 
 ReviewStatus = Literal["unreviewed", "approved", "edited", "rejected"]
@@ -69,28 +69,7 @@ def select_golden(
 
     if any(r.split not in (None, "test") for r in test_records):
         raise ValueError("the golden set must come from the test split only")
-    rng = random.Random(seed)
-    by_category: dict[str, list[ClauseRecord]] = {}
-    for record in sorted(test_records, key=lambda r: r.id):
-        by_category.setdefault(record.category, []).append(record)
-    for records in by_category.values():
-        rng.shuffle(records)
-
-    size = min(size, len(test_records))
-    chosen: dict[str, int] = dict.fromkeys(by_category, 0)
-    categories = sorted(by_category)
-    while sum(chosen.values()) < size:
-        progressed = False
-        for category in categories:
-            if sum(chosen.values()) >= size:
-                break
-            if chosen[category] < len(by_category[category]):
-                chosen[category] += 1
-                progressed = True
-        if not progressed:
-            break
-    selected = [r for c in categories for r in by_category[c][: chosen[c]]]
-    return sorted(selected, key=lambda r: (r.category, r.id))
+    return balanced_sample(test_records, size, seed=seed)
 
 
 def build_golden(
