@@ -1,0 +1,29 @@
+# CPU smoke test: tiny random Qwen3.5 (same chat template and 248k vocab as the
+# real base model, ~5M parameters). Proves the pipeline wires together; its
+# outputs are meaningless and must never be reported as results.
+experiment:
+  name: smoke-sft
+  seed: 0
+
+data:
+  train_path: data/smoke/processed/train.jsonl
+  dev_path: data/smoke/processed/dev.jsonl
+
+model:
+  name_or_path: trl-internal-testing/tiny-Qwen3_5ForConditionalGeneration-NoThink
+  revision: c21e64ab01a61fe5675253768d359262f6a19ab6
+  dtype: float32
+
+training:
+  output_dir: checkpoints/smoke/sft
+  max_length: 256
+  per_device_train_batch_size: 2
+  per_device_eval_batch_size: 2
+  gradient_accumulation_steps: 1
+  max_steps: 2
+  learning_rate: 1.0e-4
+  logging_steps: 1
+  eval_strategy: "no"
+  save_strategy: "no"
+  report_to: [none]
+  use_cpu: true
