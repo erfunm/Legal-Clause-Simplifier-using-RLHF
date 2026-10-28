@@ -1,7 +1,7 @@
 # Common tasks. Everything here runs on CPU.
 export HF_HUB_DISABLE_TELEMETRY := 1
 
-SMOKE_DATA := data/smoke/processed
+SMOKE_CONFIG := configs/smoke/data.yaml
 
 .PHONY: install lint format typecheck test test-all smoke clean
 
@@ -26,7 +26,11 @@ test-all:  ## Unit tests plus tiny-model tests
 	uv run pytest
 
 smoke:  ## End-to-end pipeline on fixture data with a tiny random model (outputs are not results)
-	uv run lcs prepare-data --input tests/fixtures/clauses.jsonl --output-dir $(SMOKE_DATA)
+	rm -rf data/smoke
+	uv run lcs prepare-data --config $(SMOKE_CONFIG)
+	uv run lcs generate-references --config $(SMOKE_CONFIG)
+	uv run lcs build-golden --config $(SMOKE_CONFIG)
+	uv run lcs dataset-card --config $(SMOKE_CONFIG)
 	uv run lcs train-sft --config configs/smoke/sft.yaml
 
 clean:
