@@ -1,0 +1,23 @@
+# Python / tooling
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+build/
+dist/
+
+# Data and artefacts (generated; never committed)
+data/raw/*
+data/processed/*
+data/smoke/
+!data/**/.gitkeep
+checkpoints/
+results/*
+!results/.gitkeep
+wandb/
+.cache/
+
+# Secrets
+.env
