@@ -9,7 +9,7 @@ Used for silver references (Phase 1) and the LLM judge (Phase 4).
   the same requests again.
 * **Cost log:** one JSON line per billed result with token usage and the
   cost at list batch prices (``PRICES_PER_MTOK``). It records spend that
-  happened; nothing here estimates spend in advance.
+  happened; advance estimates live in :mod:`legal_simplifier.llm.estimate`.
 * **Failures** (errored, expired, canceled, refused) are returned and
   counted, never cached, and never replaced with a fallback text.
 
@@ -46,10 +46,14 @@ class Price:
         return self.input * 1.25  # 5-minute cache writes
 
 
-# Anthropic list prices as of 2026-10-06. Verify against the pricing page
-# before relying on the cost log for budgeting.
+# Standard list prices, checked on 2026-10-28 against
+#   https://platform.claude.com/docs/en/about-claude/pricing
+# ("Model pricing" table). Cache hits on Sonnet 5.5 and Opus 5.5 are 0.05x the
+# base input price; 5-minute cache writes are 1.25x. The Batch API halves input
+# and output ("Batch processing": Sonnet 5.5 $1 / $5, Opus 5.5 $2 / $10 per
+# MTok), and the page says the cache multipliers stack with that discount.
 PRICES_PER_MTOK: dict[str, Price] = {
-    "claude-sonnet-5-5": Price(input=2.00, output=10.00, cache_read=0.20),
+    "claude-sonnet-5-5": Price(input=2.00, output=10.00, cache_read=0.10),
     "claude-opus-5-5": Price(input=4.00, output=20.00, cache_read=0.20),
 }
 BATCH_DISCOUNT = 0.5
@@ -226,18 +230,8 @@ class BatchRunner:
             by_key.setdefault(request_key(params), params)
         report.n_unique = len(by_key)
 
-        results: dict[str, CachedResponse | Failure] = {}
-        for key in by_key:
-            cached = self.cache.get(key)
-            if cached is not None:
-                results[key] = cached
+        results, pending, to_submit = self._plan(by_key)
         report.n_cached = len(results)
-
-        pending = [
-            p for p in self._pending() if set(p["custom_ids"]) & (set(by_key) - set(results))
-        ]
-        pending_ids = {cid for p in pending for cid in p["custom_ids"]}
-        to_submit = [k for k in by_key if k not in results and k not in pending_ids]
         report.n_submitted = len(to_submit)
         if dry_run:
             return results, report
@@ -269,6 +263,29 @@ class BatchRunner:
             if isinstance(outcome, Failure):
                 report.failures[outcome.kind] = report.failures.get(outcome.kind, 0) + 1
         return results, report
+
+    def unsubmitted(self, requests: Sequence[Mapping[str, Any]]) -> list[Mapping[str, Any]]:
+        """The unique requests a real run would submit: neither cached nor in a pending batch."""
+
+        by_key: dict[str, Mapping[str, Any]] = {}
+        for params in requests:
+            by_key.setdefault(request_key(params), params)
+        return [by_key[key] for key in self._plan(by_key)[2]]
+
+    def _plan(
+        self, by_key: Mapping[str, Mapping[str, Any]]
+    ) -> tuple[dict[str, CachedResponse | Failure], list[dict[str, Any]], list[str]]:
+        results: dict[str, CachedResponse | Failure] = {}
+        for key in by_key:
+            cached = self.cache.get(key)
+            if cached is not None:
+                results[key] = cached
+        pending = [
+            p for p in self._pending() if set(p["custom_ids"]) & (set(by_key) - set(results))
+        ]
+        pending_ids = {cid for p in pending for cid in p["custom_ids"]}
+        to_submit = [k for k in by_key if k not in results and k not in pending_ids]
+        return results, pending, to_submit
 
     def _wait(self, batch_id: str) -> None:
         while True:

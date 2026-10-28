@@ -18,8 +18,26 @@ make test-all && make smoke
 uv run lcs prepare-data --config configs/data.yaml
 #     -> data/processed/candidates.jsonl, stats.json, removed_near_duplicates.jsonl
 
-# 1b. See how many requests would be sent. Nothing is sent without --yes.
+# 1b. See how many requests would be sent and an estimated cost range. Nothing is sent
+#     without --yes. Input tokens are approximated locally by default; with
+#     --count-tokens api they come from Anthropic's token-counting endpoint (free, sends
+#     no generations, needs the key below; large runs count a 100-request sample).
 export ANTHROPIC_API_KEY=...            # or `ant auth login`
+uv run lcs generate-references --config configs/data.yaml --dry-run --count-tokens api
+```
+
+**1b-pilot. Paid pilot on about 20 clauses, then read it.** `--limit N` takes a category-balanced sample (seed `references.pilot_seed`, default 21) and writes `data/processed/pilot_references.jsonl` and `pilot_issues.jsonl` plus a `pilot` section in `stats.json`. It does not touch the split files. Its responses are cached, so the full run does not pay for them again.
+
+```bash
+uv run lcs generate-references --config configs/data.yaml --limit 20 --dry-run   # its cost range
+uv run lcs generate-references --config configs/data.yaml --limit 20 --yes       # PAID (small)
+less data/processed/pilot_references.jsonl     # clause vs reference, side by side
+cat  data/processed/pilot_issues.jsonl         # references that dropped a required entity
+```
+
+Check that each reference keeps the meaning, the entities and the obligations, and reads at about grade 8. If the style needs changing, edit `STYLE_GUIDE` in `src/legal_simplifier/data/references.py`. That changes the request, so the pilot reruns as new requests (the old cache entries are simply not used). Then dry-run the full set again: once the cost log holds pilot results, the estimate also prints the measured output tokens per request and a cost based on them, which is the number to plan with.
+
+```bash
 uv run lcs generate-references --config configs/data.yaml --dry-run
 
 # 1c. Generate the silver references (PAID: claude-sonnet-5-5 via the Batches API).

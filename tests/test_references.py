@@ -13,16 +13,19 @@ from typer.testing import CliRunner
 from legal_simplifier.cli import app
 from legal_simplifier.config import ReferenceConfig
 from legal_simplifier.data import references
-from legal_simplifier.data.prepare import prepare_from_cuad
+from legal_simplifier.data.prepare import CANDIDATES_FILE, prepare_from_cuad
 from legal_simplifier.data.references import (
+    PILOT_FILE,
+    PILOT_ISSUES_FILE,
     ClaudeReferenceGenerator,
     MockReferenceGenerator,
     build_request,
     generate_references,
     make_generator,
     parse_response,
+    select_pilot,
 )
-from legal_simplifier.data.schema import ClauseCandidate, read_records
+from legal_simplifier.data.schema import ClauseCandidate, read_jsonl, read_records
 from legal_simplifier.llm.batch import CachedResponse, request_key
 
 from .conftest import FIXTURES
@@ -194,3 +197,86 @@ def test_cli_refuses_paid_calls_without_yes(
     assert ok.exit_code == 0, ok.output
     assert len(batches.created) == 1
     assert (data_dir / "train.jsonl").exists()
+
+
+# --- pilot (--limit) -----------------------------------------------------------
+
+
+def test_pilot_sample_is_balanced_and_seeded(data_dir: Path) -> None:
+    candidates = read_jsonl(data_dir / CANDIDATES_FILE, ClauseCandidate)
+    pilot = select_pilot(candidates, 5, seed=21)
+    assert len(pilot) == 5 and len({c.category for c in pilot}) == 5  # one per category first
+    assert select_pilot(candidates, 5, seed=21) == pilot
+    assert len(select_pilot(candidates, 1000, seed=21)) == len(candidates)
+    with pytest.raises(ValueError):
+        select_pilot(candidates, 0, seed=21)
+
+
+def test_pilot_writes_its_own_file_and_the_full_run_reuses_its_responses(
+    data_dir: Path, tmp_path: Path
+) -> None:
+    generator, batches = _claude(tmp_path)
+    records, _ = generate_references(data_dir, generator, limit=3, seed=21)
+    assert len(records) == 3 and [len(b) for b in batches.created] == [3]
+    assert [r.id for r in read_records(data_dir / PILOT_FILE)] == [r.id for r in records]
+    assert (data_dir / PILOT_ISSUES_FILE).exists()
+    assert not (data_dir / "train.jsonl").exists()  # split files are left alone
+    stats = json.loads((data_dir / "stats.json").read_text())
+    assert stats["pilot"]["limit"] == 3 and stats["pilot"]["n_with_reference"] == 3
+    assert "references" not in stats
+
+    full, _ = generate_references(data_dir, generator)
+    n_candidates = len(read_jsonl(data_dir / CANDIDATES_FILE, ClauseCandidate))
+    assert [len(b) for b in batches.created] == [3, n_candidates - 3]  # pilot not paid twice
+    assert len(full) == n_candidates
+
+
+def test_dry_run_estimate_excludes_cached_requests_and_uses_pilot_output(
+    data_dir: Path, tmp_path: Path
+) -> None:
+    generator, _ = _claude(tmp_path)
+    generate_references(data_dir, generator, limit=3, seed=21)
+
+    dry, _ = _claude(tmp_path)
+    dry.dry_run = True
+    _, report = generate_references(data_dir, dry)
+    n_candidates = len(read_jsonl(data_dir / CANDIDATES_FILE, ClauseCandidate))
+    assert report.estimate is not None
+    assert report.estimate["n_requests"] == n_candidates - 3
+    assert report.estimate["measured_n"] == 3
+    assert report.estimate["counter"] == "local"
+
+
+def test_cli_limit_runs_a_pilot(
+    data_dir: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    batches = FakeBatches(_keep_entities)
+    import anthropic
+
+    monkeypatch.setattr(anthropic, "Anthropic", lambda: FakeAnthropic(batches))
+    monkeypatch.setattr(references.BatchRunner, "_wait", lambda self, batch_id: None)
+    config = tmp_path / "data.yaml"
+    config.write_text(
+        json.dumps(
+            {
+                "output_dir": str(data_dir),
+                "references": {
+                    "backend": "claude",
+                    "cache_dir": str(tmp_path / "cache"),
+                    "cost_log": str(tmp_path / "cost.jsonl"),
+                },
+            }
+        )
+    )
+    runner = CliRunner()
+    dry = runner.invoke(app, ["generate-references", "--config", str(config), "--limit", "2"])
+    assert dry.exit_code == 1 and "2 would be submitted" in dry.output
+    assert "cost range" in dry.output and batches.created == []
+
+    ok = runner.invoke(
+        app, ["generate-references", "--config", str(config), "--limit", "2", "--yes"]
+    )
+    assert ok.exit_code == 0, ok.output
+    assert [len(b) for b in batches.created] == [2]
+    assert "Pilot written to" in ok.output
+    assert len(read_records(data_dir / PILOT_FILE)) == 2

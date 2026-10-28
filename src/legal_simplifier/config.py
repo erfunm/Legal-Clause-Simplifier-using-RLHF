@@ -127,6 +127,8 @@ class ReferenceConfig(StrictModel):
     cache_dir: Path = Path("data/cache/anthropic")
     cost_log: Path = Path("data/cache/anthropic/cost_log.jsonl")
     poll_interval_s: float = 60.0
+    pilot_seed: int = 21
+    """Seed for the category-balanced ``--limit`` pilot sample."""
 
 
 class GoldenConfig(StrictModel):

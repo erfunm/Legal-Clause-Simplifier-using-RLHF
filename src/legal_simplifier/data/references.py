@@ -11,6 +11,11 @@ Backends:
 
 Each generated reference is checked against the clause's required entities;
 any it drops are listed in ``reference_issues.jsonl`` for the human review.
+
+A pilot (``limit=N``) runs a category-balanced sample of N candidates and
+writes ``pilot_references.jsonl`` and ``pilot_issues.jsonl`` instead of the
+split files, so it can be read before the full run. Its responses land in the
+same cache, so the full run does not pay for them again.
 """
 
 from __future__ import annotations
@@ -32,7 +37,8 @@ from legal_simplifier.data.prepare import (
     write_split_files,
     write_stats,
 )
-from legal_simplifier.data.schema import ClauseCandidate, ClauseRecord, read_jsonl
+from legal_simplifier.data.sampling import balanced_sample
+from legal_simplifier.data.schema import ClauseCandidate, ClauseRecord, read_jsonl, write_records
 from legal_simplifier.llm.batch import (
     BatchesAPI,
     BatchRunner,
@@ -41,10 +47,20 @@ from legal_simplifier.llm.batch import (
     RunReport,
     request_key,
 )
+from legal_simplifier.llm.estimate import (
+    DEFAULT_API_SAMPLE,
+    ApiTokenCounter,
+    CounterName,
+    LocalTokenCounter,
+    TokenCounter,
+    estimate_cost,
+)
 
 LOGGER = logging.getLogger(__name__)
 
 ISSUES_FILE = "reference_issues.jsonl"
+PILOT_FILE = "pilot_references.jsonl"
+PILOT_ISSUES_FILE = "pilot_issues.jsonl"
 
 STYLE_GUIDE = """\
 You rewrite clauses from commercial contracts into plain English for a reader with no legal training.
@@ -116,6 +132,7 @@ class ReferenceReport:
     batch: dict[str, Any] | None = None
     entity_recall_mean: float | None = None
     n_missing_entities: int = 0
+    estimate: dict[str, Any] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -151,10 +168,36 @@ class MockReferenceGenerator:
 
 
 class ClaudeReferenceGenerator:
-    def __init__(self, runner: BatchRunner, config: ReferenceConfig, *, dry_run: bool = False):
+    def __init__(
+        self,
+        runner: BatchRunner,
+        config: ReferenceConfig,
+        *,
+        dry_run: bool = False,
+        counter: TokenCounter | None = None,
+        count_sample: int = DEFAULT_API_SAMPLE,
+    ):
         self.runner = runner
         self.config = config
         self.dry_run = dry_run
+        self.counter = counter or LocalTokenCounter()
+        self.count_sample = count_sample
+
+    def estimate(self, requests: Sequence[dict[str, Any]]) -> dict[str, Any] | None:
+        """Cost range for the requests a real run would submit (cached ones are free)."""
+
+        measured = [
+            int(e["usage"].get("output_tokens") or 0)
+            for e in self.runner.cost_log.entries()
+            if e.get("model") == self.config.model and e.get("usage")
+        ]
+        estimate = estimate_cost(
+            self.runner.unsubmitted(requests),
+            self.counter,
+            sample_size=self.count_sample,
+            measured_output_tokens=measured,
+        )
+        return estimate.to_dict() if estimate else None
 
     def generate(
         self, candidates: Sequence[ClauseCandidate]
@@ -163,6 +206,8 @@ class ClaudeReferenceGenerator:
         results, run_report = self.runner.run(requests, dry_run=self.dry_run)
         report = ReferenceReport("claude", self.config.model, len(candidates))
         report.batch = run_report.to_dict()
+        if self.dry_run:
+            report.estimate = self.estimate(requests)
         records: list[ClauseRecord] = []
         failures: dict[str, int] = dict(run_report.failures) if not self.dry_run else {}
         for candidate, params in zip(candidates, requests, strict=True):
@@ -205,7 +250,11 @@ def _entity_recalls(records: Sequence[ClauseRecord]) -> list[float]:
 
 
 def make_generator(
-    config: ReferenceConfig, *, dry_run: bool = False, client: Any | None = None
+    config: ReferenceConfig,
+    *,
+    dry_run: bool = False,
+    client: Any | None = None,
+    count_tokens: CounterName = "local",
 ) -> ReferenceGenerator:
     if config.backend == "mock":
         return MockReferenceGenerator()
@@ -222,16 +271,40 @@ def make_generator(
         cost_log=config.cost_log,
         poll_interval_s=config.poll_interval_s,
     )
-    return ClaudeReferenceGenerator(runner, config, dry_run=dry_run)
+    counter: TokenCounter = (
+        ApiTokenCounter(client.messages) if count_tokens == "api" else LocalTokenCounter()
+    )
+    return ClaudeReferenceGenerator(runner, config, dry_run=dry_run, counter=counter)
+
+
+def select_pilot(
+    candidates: Sequence[ClauseCandidate], limit: int, *, seed: int
+) -> list[ClauseCandidate]:
+    """A category-balanced, seeded sample of ``limit`` candidates for a paid pilot."""
+
+    if limit < 1:
+        raise ValueError("limit must be at least 1")
+    return balanced_sample(candidates, limit, seed=seed)
 
 
 def generate_references(
-    data_dir: Path | str, generator: ReferenceGenerator
+    data_dir: Path | str,
+    generator: ReferenceGenerator,
+    *,
+    limit: int | None = None,
+    seed: int = 21,
 ) -> tuple[list[ClauseRecord], ReferenceReport]:
-    """Read ``candidates.jsonl``, attach references, write split files and update ``stats.json``."""
+    """Read ``candidates.jsonl``, attach references, write split files and update ``stats.json``.
+
+    With ``limit`` only a balanced pilot sample is processed, and the results go
+    to ``pilot_references.jsonl`` (plus ``pilot_issues.jsonl`` and a ``pilot``
+    section in the stats) so the split files stay untouched.
+    """
 
     data_dir = Path(data_dir)
     candidates = read_jsonl(data_dir / CANDIDATES_FILE, ClauseCandidate)
+    if limit is not None:
+        candidates = select_pilot(candidates, limit, seed=seed)
     records, report = generator.generate(candidates)
     if isinstance(generator, ClaudeReferenceGenerator) and generator.dry_run:
         return records, report
@@ -241,10 +314,17 @@ def generate_references(
     issues = entity_issues(records)
     report.n_missing_entities = len(issues)
 
+    if limit is not None:
+        write_records(records, data_dir / PILOT_FILE)
+        _write_issues(data_dir / PILOT_ISSUES_FILE, issues)
+        stats = read_stats(data_dir)
+        stats["pilot"] = {"limit": limit, "seed": seed, **report.to_dict()}
+        write_stats(data_dir, stats)
+        LOGGER.info("Pilot: %d references in %s", len(records), data_dir / PILOT_FILE)
+        return records, report
+
     write_split_files(records, data_dir)
-    (data_dir / ISSUES_FILE).write_text(
-        "".join(json.dumps(i, ensure_ascii=False) + "\n" for i in issues), encoding="utf-8"
-    )
+    _write_issues(data_dir / ISSUES_FILE, issues)
     stats = read_stats(data_dir)
     stats["references"] = report.to_dict()
     stats["reference_source"] = reference_source_counts(records)
@@ -257,6 +337,12 @@ def generate_references(
         report.n_missing_entities,
     )
     return records, report
+
+
+def _write_issues(path: Path, issues: Sequence[Mapping[str, Any]]) -> None:
+    path.write_text(
+        "".join(json.dumps(dict(i), ensure_ascii=False) + "\n" for i in issues), encoding="utf-8"
+    )
 
 
 def summarise_run(report: RunReport | Mapping[str, Any]) -> str:
