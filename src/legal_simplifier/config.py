@@ -100,6 +100,51 @@ class RewardConfig(StrictModel):
         return self
 
 
+class ExtractionConfig(StrictModel):
+    cuad_json: Path | None = None
+    """Local ``CUAD_v1.json``; ``None`` downloads the pinned file from the Hub."""
+    categories: list[str] | None = None
+    """``None`` uses ``legal_simplifier.data.cuad.DEFAULT_CATEGORIES``."""
+    min_chars: int = 40
+    min_words: int = 6
+    max_chars: int = 1500
+
+
+class SplitConfig(StrictModel):
+    dedup_threshold: float = Field(default=0.8, gt=0.0, le=1.0)
+    ratios: tuple[float, float, float] = (0.8, 0.1, 0.1)
+    seed: int = 13
+
+
+class ReferenceConfig(StrictModel):
+    """Silver reference generation."""
+
+    backend: str = Field(default="mock", pattern="^(mock|claude)$")
+    model: str = "claude-sonnet-5-5"
+    effort: str = Field(default="medium", pattern="^(low|medium|high|xhigh|max)$")
+    max_tokens: int = 4096
+    """Includes adaptive thinking tokens, so leave headroom over the clause length."""
+    cache_dir: Path = Path("data/cache/anthropic")
+    cost_log: Path = Path("data/cache/anthropic/cost_log.jsonl")
+    poll_interval_s: float = 60.0
+
+
+class GoldenConfig(StrictModel):
+    output_dir: Path = Path("data/golden")
+    size: int = Field(default=150, gt=0)
+    seed: int = 7
+
+
+class DataPrepConfig(StrictModel):
+    """Contents of ``configs/data*.yaml``."""
+
+    output_dir: Path = Path("data/processed")
+    extraction: ExtractionConfig = Field(default_factory=ExtractionConfig)
+    split: SplitConfig = Field(default_factory=SplitConfig)
+    references: ReferenceConfig = Field(default_factory=ReferenceConfig)
+    golden: GoldenConfig = Field(default_factory=GoldenConfig)
+
+
 def load_yaml(path: Path | str) -> dict[str, Any]:
     with Path(path).open(encoding="utf-8") as handle:
         data = yaml.safe_load(handle) or {}
