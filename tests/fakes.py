@@ -13,6 +13,7 @@ from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any
 
+from anthropic.types import MessageTokensCount
 from anthropic.types.messages import MessageBatch, MessageBatchIndividualResponse
 
 TEMPLATES = json.loads(
@@ -93,6 +94,19 @@ class FakeBatches:
         )
 
 
+class FakeMessages:
+    """``batches`` plus a fake of the free ``count_tokens`` endpoint (1 token per 3 characters)."""
+
+    def __init__(self, batches: FakeBatches):
+        self.batches = batches
+        self.count_calls: list[dict[str, Any]] = []
+
+    def count_tokens(self, **kwargs: Any) -> MessageTokensCount:
+        assert "max_tokens" not in kwargs, "count_tokens does not take max_tokens"
+        self.count_calls.append(kwargs)
+        return MessageTokensCount(input_tokens=len(json.dumps(kwargs)) // 3)
+
+
 class FakeAnthropic:
     def __init__(self, batches: FakeBatches):
-        self.messages = type("Messages", (), {"batches": batches})()
+        self.messages = FakeMessages(batches)
