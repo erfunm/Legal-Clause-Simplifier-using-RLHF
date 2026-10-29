@@ -1,10 +1,42 @@
 [project]
 name = "legal-simplifier"
 version = "0.1.0"
-description = "Post-training a small LLM (SFT -> GRPO/DPO) to rewrite legal clauses in plain English while preserving entities."
+description = "Post-training Qwen3.5-0.8B (SFT, GRPO, DPO) to rewrite contract clauses in plain English while keeping every entity, obligation and condition; with reward-hacking detectors, a human-validated LLM judge and a FastAPI/Docker serving stack."
 readme = "README.md"
 license = "MIT"
+license-files = ["LICENSE"]
 requires-python = ">=3.11"
+authors = [{ name = "Erfan Mirhosseini", email = "43404032+erfunm@users.noreply.github.com" }]
+keywords = [
+    "llm",
+    "post-training",
+    "rlhf",
+    "grpo",
+    "dpo",
+    "lora",
+    "reward-hacking",
+    "llm-as-judge",
+    "text-simplification",
+    "legal-nlp",
+    "plain-language",
+    "cuad",
+    "trl",
+    "qwen",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Science/Research",
+    "Intended Audience :: Developers",
+    "Natural Language :: English",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Text Processing :: Linguistic",
+    "Typing :: Typed",
+]
 dependencies = [
     "huggingface-hub>=1.0",
     "numpy>=2.0",
@@ -64,6 +96,13 @@ review = [
 aws = [
     "boto3>=1.35",
 ]
+
+[project.urls]
+Homepage = "https://github.com/erfunm/Legal-Clause-Simplifier-using-RLHF"
+Repository = "https://github.com/erfunm/Legal-Clause-Simplifier-using-RLHF"
+Issues = "https://github.com/erfunm/Legal-Clause-Simplifier-using-RLHF/issues"
+Documentation = "https://github.com/erfunm/Legal-Clause-Simplifier-using-RLHF/blob/main/docs/RUNBOOK.md"
+"Design decisions" = "https://github.com/erfunm/Legal-Clause-Simplifier-using-RLHF/blob/main/docs/decisions.md"
 
 [project.scripts]
 lcs = "legal_simplifier.cli:app"
