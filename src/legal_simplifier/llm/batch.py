@@ -1,6 +1,6 @@
 """Run Claude requests through the Message Batches API, with an on-disk cache and a cost log.
 
-Used for silver references (Phase 1) and the LLM judge (Phase 4).
+Used for the silver references, the Claude evaluation system and the LLM judge.
 
 * **Cache:** every successful response is stored under the SHA-256 of its
   request parameters, so re-running a stage costs nothing.

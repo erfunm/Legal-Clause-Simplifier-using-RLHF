@@ -21,7 +21,7 @@ They are heuristics on surface text, so they are deterministic and cheap enough
 to run inside the reward (the ``format`` reward subtracts a penalty per
 detector that fires) and over saved outputs (``lcs detect-hacking``). They
 will miss paraphrased failures; the NLI ``meaning`` reward and the LLM judge
-(Phase 4) cover those.
+cover those.
 """
 
 from __future__ import annotations
