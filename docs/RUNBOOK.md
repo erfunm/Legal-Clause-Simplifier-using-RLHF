@@ -114,7 +114,7 @@ Check `lora.json`: `unmatched_targets` must be empty, and `left_out` should list
 # 3a. Modal (same Volume as §2; the SFT adapter is already on it).
 modal run scripts/modal_rl.py --stage grpo               # configs/grpo.yaml -> checkpoints/grpo/
 modal run scripts/modal_rl.py --stage dpo                # pairs -> data/preferences/, then checkpoints/dpo/
-modal run scripts/modal_rl.py --stage ablations          # 4 runs in parallel, one L4 each
+modal run scripts/modal_rl.py --stage ablations          # 5 runs in parallel, one L4 each
 modal volume get legal-simplifier checkpoints/grpo checkpoints/grpo
 modal volume get legal-simplifier checkpoints/dpo checkpoints/dpo
 modal volume get legal-simplifier checkpoints/ablations checkpoints/ablations
@@ -126,7 +126,7 @@ modal volume get legal-simplifier data/preferences data/preferences
 # 3c. Any CUDA machine.
 uv run lcs train-grpo --config configs/grpo.yaml
 uv run lcs build-preferences --config configs/dpo.yaml && uv run lcs train-dpo --config configs/dpo.yaml
-uv run lcs ablate --dry-run     # prints the 4 runs and their differences from grpo.yaml
+uv run lcs ablate --dry-run     # prints the 5 runs and their differences from grpo.yaml
 uv run lcs ablate               # runs them one after another
 ```
 

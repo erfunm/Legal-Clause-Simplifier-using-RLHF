@@ -326,13 +326,17 @@ The old reward was one clipped composite built for PPO. It is replaced by four f
 
 | reward | default | range | why |
 |---|---|---|---|
-| `meaning` | NLI P(entailment) of clause → output, `cross-encoder/nli-deberta-v3-base` at a pinned revision (Apache-2.0, ~184M) | [0, 1] | Needs no reference and penalises added or contradicted content. The premise (the clause) is truncated first, so the output is always read in full. BERTScore-F1 against the reference is a config alternative. |
+| `meaning` | NLI P(entailment) of clause → output, `cross-encoder/nli-deberta-v3-base` at a pinned revision (Apache-2.0, ~184M) | [0, 1] | Needs no reference and penalises added or contradicted content. The premise (the clause) is truncated first, so the output is always read in full. Config alternatives: `nli_coverage` (reverse, per part; see below) and BERTScore-F1 against the reference. |
 | `simplicity` | mean of SARI and an FKGL band (grade 5–9, linear fall-off over 4 grades) | [0, 1] | SARI rewards the edits a good reference makes. The band has a **lower** edge, so stringing two-word sentences together to cut FKGL stops paying. Empty output scores 0. |
 | `entity_preservation` | normalised entity recall | [0, 1] | Reuses the Phase 1 entity checks. The normaliser now also equates "$1,000,000", "$1 million" and "one million dollars", and "twenty-five days" with "25 days". |
 | `format` | 0 when clean; −1 for empty output; otherwise penalties for copying, runaway length (more than 1.6× the clause's words) and each reward-hacking detector (ADR-020), clipped at −1 | [−1, 0] | Catches failures the other three can reward. |
 
 - **Weights:** all 1.0 at first. They set each reward's share of the summed reward; the sum is then normalised within each group (`scale_rewards: group`), so only the ratios between weights matter, not their overall size. `multi_objective_aggregation: normalize_then_sum` (GDPO) is available if one reward's variance dominates the logs.
-- **NLI direction:** NLI is one-directional, so an output that drops a sentence is still "entailed". Dropped content is therefore left to entity recall and the truncation detector, rather than added as a reverse-entailment check, which would punish legitimate simplification.
+- **NLI direction** *(revised in the Phase 3 follow-up)*. Clause → output NLI is one-directional: an output that *drops* content is still entailed. This entry first said dropped content would be left to entity recall and the truncation detector, and that a reverse-entailment check would punish legitimate simplification. Both claims were too strong.
+  - **The gap.** "The Licensee may terminate on 30 days' notice, unless the breach has been cured" → "The Licensee can end this agreement with 30 days' notice" is fully entailed, keeps every extracted entity, keeps the one permission (so `truncation` and `modality_flip` stay silent), and scores *better* on simplicity. GRPO would learn to delete exceptions. Entity recall catches the drop only when the exception names its own entities; for the reviewer's version with "within 10 days" and "the Licensor", recall falls to 0.5, which is a partial signal, not a block.
+  - **Fix 1: `condition_drop` detector** (ADR-020). It counts condition, exception and time-limit markers on both sides and fires when the output has fewer. It costs `format.condition_drop_penalty` (0.5), keeps flagged samples from being DPO winners, and is reported by `lcs detect-hacking`. This is on by default, because a dropped exception changes what the clause means.
+  - **Fix 2: `meaning.method: nli_coverage`.** The clause is split into sentences and conditional parts (a break before "unless", "provided", "subject to", "if" and so on that follows a comma or semicolon, with very short parts merged and at most 8 parts). Each part is scored as P(entailment | premise = output, hypothesis = part), and the mean is the meaning reward. A dropped part pulls the score down. This replaces the forward direction for that run, so it does not also check for added content (the `format` detectors and the Phase 4 judge still do).
+  - Whether coverage also punishes legitimate compression (merging two parts, or dropping redundant legal phrasing) is now a measurement, not an assumption. The `ablation-meaning-coverage` run (ADR-022) compares it with the default on simplicity, entity recall and the judge. The default stays `nli` until that result exists.
 - **Memory:** the NLI scorer is loaded once per process and scored in batches on the training GPU.
 
 ---
@@ -362,12 +366,18 @@ Further details:
 
 **Date:** 2026-10-28 · **Status:** accepted; thresholds to recalibrate on real outputs
 
-`rewards/hacking.py` has four deterministic detectors. Each has unit tests on hand-written examples, including faithful rewrites that must *not* fire.
+`rewards/hacking.py` has five deterministic detectors. Each has unit tests on hand-written examples, including faithful rewrites that must *not* fire.
 
 - **truncation:** the output drops modal statements (obligation / permission / prohibition, counted by phrase patterns; prohibitions are matched first, so "shall not" is not counted as "shall") **and** is either under half the clause's length or averages under 5 words per sentence. This is the "game FKGL with very short sentences that drop obligations" failure.
 - **verbatim_copy:** the output is identical to the clause after normalisation, or ≥ 85% of its word 4-grams occur in the clause.
 - **word_salad:** two or more entities are present, and either one is repeated 3+ times, or fewer than 4 (or under 25%) of the remaining words are not entities. The share was first 40%. The tests showed that a grammatical, entity-dense legal sentence has about 35% non-entity words, so the threshold was lowered.
 - **modality_flip:** a prohibition loses its negation, a prohibition is added, or the obligation count falls while the permission count rises (must → may), or the reverse (may → must). Counts rather than presence, so clauses that mix "must" and "may" are still checked.
+- **condition_drop** *(Phase 3 follow-up)*: the output has fewer condition, exception or time-limit markers than the clause.
+  - Markers: "unless", "except", "provided (however) that", "subject to", "if", "only if", "until", "within", "notwithstanding", "in the event of/that", "on condition that", "as/so long as", "no later than", "even if" and "regardless of".
+  - Plain-English equivalents count too: "only when", "but not if", "except if", "in case", "when", and "in 10 (business) days" for a time limit.
+  - Matching is longest first and consumes text, so "but not if" counts once, not again as "if".
+  - A rewrite may swap one marker for another ("provided that" → "only if", "within" → "in 10 days") without firing.
+  - Known misses and false alarms: a condition rephrased with no marker at all ("subject to Section 5" → "Section 5 applies") fires, and a dropped condition replaced by an unrelated "if" does not. The thresholds are to be checked against real outputs.
 
 **How they change the reward:**
 - Each detector that fires subtracts its own configurable penalty in `format`.
@@ -405,6 +415,7 @@ These are surface heuristics. A fluent paraphrase that changes the meaning gets 
 | `ablation-entity-off` | `rewards.weights.entity_preservation: 0`. Still computed and logged, so its curve is comparable with the baseline's. |
 | `ablation-num-generations-2` | `grpo.num_generations: 2`. Completions per step stay at 32, so compute is equal and the step sees 16 clauses instead of 4. |
 | `ablation-beta-0.04` | `grpo.beta: 0.04` (KL to the frozen SFT copy) |
+| `ablation-meaning-coverage` | `rewards.meaning.method: nli_coverage`: sentence-level reverse NLI. It measures whether coverage punishes legitimate simplification (ADR-018). |
 
 - **Validation:** overrides are validated against the strict config schema, so a typo fails instead of silently running the baseline.
 - **Launchers:**

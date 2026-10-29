@@ -1,7 +1,8 @@
 """The four reward functions, as GRPO reward callables and as one weighted composite.
 
-* ``meaning``: NLI P(entailment | clause -> output) by default, or BERTScore-F1
-  against the reference (``meaning.method``). Range [0, 1] for NLI.
+* ``meaning``: NLI P(entailment | clause -> output) by default; ``nli_coverage``
+  (each clause part entailed by the output, averaged) or BERTScore-F1 against
+  the reference as alternatives (``meaning.method``). Range [0, 1] for NLI.
 * ``simplicity``: SARI against the reference, an FKGL target band, or their
   mean. Range [0, 1].
 * ``entity_preservation``: fraction of required entities kept, after
@@ -27,6 +28,7 @@ from legal_simplifier.config import RewardConfig
 from legal_simplifier.rewards.components import (
     EntailmentScorer,
     SimilarityScorer,
+    coverage_entailment,
     entity_preservation_score,
     format_score,
     get_bertscore_scorer,
@@ -107,8 +109,17 @@ class RewardSuite:
         keep = [i for i, o in enumerate(outputs) if o.strip()]  # empty output means nothing
         if not keep:
             return scores
-        if self.config.meaning.method == "nli":
+        method = self.config.meaning.method
+        if method == "nli":
             values = self._nli().entailment([clauses[i] for i in keep], [outputs[i] for i in keep])
+        elif method == "nli_coverage":
+            values = coverage_entailment(
+                [clauses[i] for i in keep],
+                [outputs[i] for i in keep],
+                self._nli(),
+                max_parts=self.config.meaning.coverage_max_parts,
+                min_words=self.config.meaning.coverage_min_words,
+            )
         else:
             values = self._bertscore().score(
                 [outputs[i] for i in keep], [references[i] for i in keep]

@@ -153,9 +153,18 @@ class RewardWeights(StrictModel):
 
 
 class MeaningConfig(StrictModel):
-    """``nli``: P(entailment | clause -> output), needs no reference. ``bertscore``: F1 vs reference."""
+    """How ``meaning`` is scored (see docs/decisions.md, ADR-018).
 
-    method: str = Field(default="nli", pattern="^(nli|bertscore)$")
+    * ``nli``: P(entailment | premise = clause, hypothesis = output). Catches added or
+      contradicted content; blind to dropped content.
+    * ``nli_coverage``: the clause split into sentences and conditional parts, each
+      scored as P(entailment | premise = output, hypothesis = part), then averaged.
+      Catches a dropped part; may also punish legitimate compression (the
+      ``meaning_coverage`` ablation measures that).
+    * ``bertscore``: F1 against the reference.
+    """
+
+    method: str = Field(default="nli", pattern="^(nli|nli_coverage|bertscore)$")
     nli_model: str = "cross-encoder/nli-deberta-v3-base"
     nli_revision: str | None = "6c749ce3425cd33b46d187e45b92bbf96ee12ec7"
     entailment_label: str | None = None
@@ -164,6 +173,10 @@ class MeaningConfig(StrictModel):
     batch_size: int = 32
     bertscore_model: str = "roberta-large"
     bertscore_rescale_with_baseline: bool = True
+    coverage_max_parts: int = 8
+    """``nli_coverage``: at most this many parts per clause (the rest is merged into the last)."""
+    coverage_min_words: int = 3
+    """``nli_coverage``: a shorter part is merged into its neighbour."""
 
 
 class SimplicityConfig(StrictModel):
@@ -195,6 +208,7 @@ class FormatConfig(StrictModel):
     truncation_penalty: float = 0.5
     word_salad_penalty: float = 1.0
     modality_flip_penalty: float = 0.5
+    condition_drop_penalty: float = 0.5
 
 
 class RewardConfig(StrictModel):

@@ -1,0 +1,7 @@
+# GRPO ablation, resolved on top of configs/grpo.yaml. Run: lcs ablate (or modal run scripts/modal_rl.py --stage ablations).
+base: ../grpo.yaml
+name: ablation-meaning-coverage
+description: "meaning = sentence-level reverse NLI (each clause part entailed by the output) instead of clause -> output; measures whether coverage punishes legitimate simplification"
+overrides:
+  rewards.meaning.method: nli_coverage
+  grpo.max_steps: 300           # small, equal budget for every ablation run

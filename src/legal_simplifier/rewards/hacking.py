@@ -11,6 +11,11 @@ the task:
   repeated, to max out entity recall.
 * ``modality_flip``: a "must" that became "may", a "must not" that lost its
   negation, or a prohibition that was not in the clause.
+* ``condition_drop``: fewer conditions, exceptions or time limits than the
+  clause ("unless", "provided that", "within"), a failure one-way NLI and
+  ``truncation`` miss: "may terminate on 30 days' notice, unless the breach has
+  been cured" -> "can end it with 30 days' notice" is still entailed, keeps
+  every entity and keeps the one permission.
 
 They are heuristics on surface text, so they are deterministic and cheap enough
 to run inside the reward (the ``format`` reward subtracts a penalty per
@@ -28,7 +33,7 @@ from dataclasses import asdict, dataclass
 
 from legal_simplifier.data.entities import check_entity_presence, normalise_for_match
 
-DETECTORS = ("truncation", "verbatim_copy", "word_salad", "modality_flip")
+DETECTORS = ("truncation", "verbatim_copy", "word_salad", "modality_flip", "condition_drop")
 
 _SUBJECT = r"(?:party|parties|one|person|\w+)"
 PROHIBITION = re.compile(
@@ -51,6 +56,35 @@ PERMISSION = re.compile(
     r"|is\s+allowed\s+to|are\s+allowed\s+to|at\s+its\s+(?:sole\s+)?(?:option|discretion))\b",
     re.IGNORECASE,
 )
+
+# Condition / exception / time-limit markers, legal and plain-English, longest first so that
+# "only if" or "but not if" counts once and not again as "if". Both sides are counted with
+# the same list, so a rewrite may swap "provided that" for "only if" or "within" for "in 10 days".
+_DURATION = (
+    r"(?:\d+|[a-z]+(?:-[a-z]+)?)\s+(?:\(\d+\)\s+)?(?:business\s+|calendar\s+|working\s+)?"
+    r"(?:days?|weeks?|months?|years?)"
+)
+CONDITION_MARKERS = (
+    r"in\s+the\s+event\s+(?:that|of)",
+    r"on\s+(?:the\s+)?condition\s+that",
+    r"provided\s*,?\s+(?:however\s*,?\s+)?that",
+    r"subject\s+to",
+    r"notwithstanding",
+    r"(?:but|except)\s+(?:not\s+)?(?:if|when|where)",
+    r"only\s+(?:if|when|after|once)",
+    r"(?:as|so)\s+long\s+as",
+    r"even\s+(?:if|though)",
+    r"regardless\s+of",
+    r"in\s+case",
+    r"unless",
+    r"except(?:ing)?(?:\s+(?:that|for|as))?",
+    r"until|till",
+    r"within",
+    r"no(?:t)?\s+later\s+than",
+    rf"in\s+{_DURATION}",
+    r"if|whenever|when",
+)
+CONDITION = re.compile(r"\b(?:" + "|".join(CONDITION_MARKERS) + r")\b", re.IGNORECASE)
 
 _TOKEN = re.compile(r"[a-z0-9$%]+(?:[.'][a-z0-9]+)*")
 _SENTENCE_END = re.compile(r"[.!?;:]+(?:\s+|$)")
@@ -197,6 +231,27 @@ def detect_modality_flip(clause: str, output: str) -> Finding:
     return Finding("modality_flip", bool(flips), "; ".join(flips))
 
 
+def conditions(text: str) -> list[str]:
+    """The condition, exception and time-limit markers in ``text``, in order."""
+
+    return [" ".join(m.group(0).lower().split()) for m in CONDITION.finditer(text)]
+
+
+def detect_condition_drop(clause: str, output: str) -> Finding:
+    """Fewer condition / exception / time-limit markers in the output than in the clause."""
+
+    before, after = conditions(clause), conditions(output)
+    if not output.strip() or len(after) >= len(before):
+        return Finding("condition_drop", False)
+    kept = ", ".join(after) or "none"
+    return Finding(
+        "condition_drop",
+        True,
+        f"keeps {len(after)} of {len(before)} conditions/exceptions "
+        f"(clause: {', '.join(before)}; output: {kept})",
+    )
+
+
 def run_detectors(
     clause: str,
     output: str,
@@ -209,4 +264,5 @@ def run_detectors(
         "verbatim_copy": detect_verbatim_copy(clause, output, threshold=copy_threshold),
         "word_salad": detect_word_salad(output, entities),
         "modality_flip": detect_modality_flip(clause, output),
+        "condition_drop": detect_condition_drop(clause, output),
     }
