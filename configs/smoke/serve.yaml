@@ -1,0 +1,7 @@
+# CPU smoke: serve the tiny random Qwen3.5 merged by the smoke SFT run. Output is noise.
+model:
+  name_or_path: checkpoints/smoke/sft/merged
+  dtype: float32
+model_label: smoke-sft
+engine: transformers
+max_new_tokens: 16

@@ -1,0 +1,18 @@
+# lcs serve: the FastAPI service. Not run yet; see docs/RUNBOOK.md §5.
+#   uv run lcs serve --config configs/serve.yaml          (any machine; transformers)
+#   docker compose up api                                 (CPU image)
+#   docker compose --profile gpu up api-gpu               (GPU image; vLLM, falls back to transformers)
+model:
+  name_or_path: checkpoints/grpo/merged   # base + GRPO adapter merged (lcs train-grpo / merge-adapter)
+  dtype: bfloat16                          # float32 is used automatically on CPU
+model_label: sft-grpo                      # matches the eval system name, so benchmark cost joins the report
+engine: auto                               # auto | transformers | vllm
+max_new_tokens: 384
+max_clause_chars: 4000
+host: 127.0.0.1                            # 0.0.0.0 inside Docker
+port: 8000
+log_level: INFO
+otel:
+  enabled: false                           # true needs the `otel` extra and an OTLP endpoint
+  service_name: legal-clause-simplifier
+  endpoint: null                           # e.g. http://localhost:4318; null = OTEL_* environment

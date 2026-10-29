@@ -23,6 +23,22 @@ train = [
     "transformers>=5.20",
     "trl>=1.16",
 ]
+# Inference only (lcs serve, the Space, lcs benchmark). Kept looser than `train` so the GPU
+# image can take vLLM's own torch / transformers pins (docs/decisions.md, ADR-028).
+infer = [
+    "torch>=2.8",
+    "transformers>=5.10",
+]
+serve = [
+    "fastapi>=0.120",
+    "uvicorn>=0.38",
+    "httpx>=0.28",
+]
+otel = [
+    "opentelemetry-sdk>=1.40",
+    "opentelemetry-exporter-otlp-proto-http>=1.40",
+    "opentelemetry-instrumentation-fastapi>=0.60b0",
+]
 # Experiment tracking for training runs (choose one in the config's `tracking` block).
 tracking = [
     "trackio>=0.44",

@@ -1,0 +1,27 @@
+# lcs benchmark: latency, throughput and $ per 1k clauses for the served model on one GPU,
+# against Claude. Not run yet. Real run: modal run scripts/modal_benchmark.py (one L4).
+experiment:
+  name: bench-sft-grpo-l4
+  seed: 0
+
+serve:
+  model:
+    name_or_path: checkpoints/grpo/merged
+    dtype: bfloat16
+  model_label: sft-grpo
+  engine: auto
+  max_new_tokens: 384
+
+clauses_path: data/processed/test.jsonl
+n_clauses: 200
+warmup: 5
+batch_size: 16
+
+gpu: NVIDIA L4 (Modal)
+gpu_hourly_usd: 0.7992                     # $0.000222/s x 3600, GPU only
+gpu_price_source: "modal.com/pricing, checked 2026-10-29; CPU and memory billed separately"
+
+eval_run: results/eval-v1                  # its claude system's real spend is the comparison
+cost_log: data/cache/anthropic/cost_log.jsonl
+claude_model: claude-sonnet-5-5
+output_dir: results/benchmarks

@@ -15,6 +15,7 @@ The gate re-scores stored outputs with the current entity checks, reward-hacking
 the judge **proxy** (deterministic 1-5 stand-ins, not an LLM judge). It guards the scoring code
 and catches worse outputs. It says nothing about model quality.
 
-Known false positives kept on purpose (the 10% `modality_flip` baseline): `gate-02` ("it will not
-renew" counted as a prohibition) and `gate-17` ("no termination shall take effect before…", a
-time condition worded as a prohibition, which the rewrite correctly turns into "only if…").
+Former false positives: `gate-02` ("it will not renew") and `gate-17` ("no termination shall take
+effect before…") used to trip `modality_flip`. Modal verbs inside a conditional clause are no
+longer counted as main statements, so both pass now, and `tests/test_hacking.py` keeps them as
+regression tests.

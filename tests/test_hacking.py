@@ -237,3 +237,62 @@ def test_condition_markers_count_once_each_longest_first(text: str, expected: li
 
 def test_empty_output_is_left_to_the_format_reward() -> None:
     assert not detect_condition_drop(TERMINATION, "").flagged
+
+
+# --- modals inside conditions are not main statements (former false positives) ------------
+
+RENEWAL = (
+    "This Agreement shall automatically renew for successive one (1) year terms unless either "
+    "party gives notice of non-renewal at least sixty (60) days before the end of the "
+    "then-current term."
+)
+RENEWAL_REWRITE = (
+    "This Agreement renews every 1 year unless either party gives notice that it will not renew "
+    "at least 60 days before the current term ends."
+)
+EARLIEST_END = (
+    "Either party may terminate this Agreement for convenience upon one hundred twenty (120) "
+    "days' prior written notice, provided that no termination shall take effect before "
+    "December 31, 2025."
+)
+EARLIEST_END_REWRITE = (
+    "Either party can end this Agreement for any reason with 120 days' written notice, but only "
+    "if the end date is not before December 31, 2025."
+)
+
+
+@pytest.mark.parametrize(
+    ("clause", "rewrite"),
+    [(RENEWAL, RENEWAL_REWRITE), (EARLIEST_END, EARLIEST_END_REWRITE)],
+    ids=["will-not-renew", "no-termination-shall-take-effect"],
+)
+def test_modals_inside_conditions_do_not_count_as_flips(clause: str, rewrite: str) -> None:
+    # Regression: eval-gate fixtures gate-02 and gate-17 were faithful rewrites flagged as flips.
+    # The detector feeds the GRPO format reward, so this taught the policy to avoid them.
+    assert not detect_modality_flip(clause, rewrite).flagged
+    assert not any(f.flagged for f in run_detectors(clause, rewrite).values())
+
+
+def test_main_statements_around_conditions_still_count() -> None:
+    assert dict(modality("If the Buyer pays late, the Seller may suspend delivery.")) == {
+        "permission": 1
+    }
+    assert dict(modality("Each party agrees that it will not disclose the terms.")) == {
+        "prohibition": 1
+    }
+    # A time limit is a phrase, not a clause: the prohibition after it still counts.
+    assert dict(modality("The Licensee shall pay within 30 days and shall not sublicense.")) == {
+        "prohibition": 1,
+        "obligation": 1,
+    }
+
+
+def test_flips_in_the_main_statement_are_still_caught() -> None:
+    finding = detect_modality_flip(
+        EARLIEST_END, EARLIEST_END_REWRITE.replace("Either party can end", "Either party must end")
+    )
+    assert finding.flagged and "may -> must" in finding.detail
+    fronted = "If the Buyer pays late, the Seller may suspend delivery."
+    assert detect_modality_flip(
+        fronted, "If the Buyer pays late, the Seller must suspend delivery."
+    ).flagged

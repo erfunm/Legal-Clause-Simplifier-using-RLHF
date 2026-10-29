@@ -7,9 +7,10 @@ Post-training a small open model (Qwen3.5-0.8B) to rewrite legal contract clause
 > - the data pipeline: CUAD clause extraction, contract-level splits, silver references through the Claude Batches API, a golden test set and the tool for reviewing it;
 > - the SFT baseline: LoRA/QLoRA with PEFT, Trackio or W&B logging, adapter and merged weights, model cards, and a Colab/Kaggle notebook and Modal script for the GPU run;
 > - RL post-training: GRPO from the SFT adapter with four separately logged rewards, DPO on reward-ranked pairs, reward-hacking detectors, and four ablations with one launcher;
-> - the evaluation harness: 8 systems on the golden set, automatic metrics with bootstrap CIs and paired tests, a blind Claude judge with human validation and an open-weight cross-check, error analysis, the report generator, and a CI eval gate.
+> - the evaluation harness: 8 systems on the golden set, automatic metrics with bootstrap CIs and paired tests, a blind Claude judge with human validation and an open-weight cross-check, error analysis, the report generator, and a CI eval gate;
+> - serving: a FastAPI service with streaming and per-request warnings, CPU and GPU (vLLM) Docker images, a Gradio demo for a Hugging Face Space, and a latency/cost benchmark.
 >
-> The real reference run, the golden-set review, the GPU training runs and the evaluation have not happened yet. RL training, evaluation and serving are being added phase by phase. See [`docs/decisions.md`](docs/decisions.md) for the design decisions and [`docs/RUNBOOK.md`](docs/RUNBOOK.md) for the steps that need keys, a GPU or a person.
+> The real reference run, the golden-set review, the GPU training runs, the evaluation and the benchmark have not happened yet, and nothing has been published. RL training, evaluation and serving are being added phase by phase. See [`docs/decisions.md`](docs/decisions.md) for the design decisions and [`docs/RUNBOOK.md`](docs/RUNBOOK.md) for the steps that need keys, a GPU or a person.
 
 ## Results: pending first full run
 
@@ -87,7 +88,8 @@ make smoke             # fixture -> mock refs -> golden set -> SFT -> GRPO -> DP
 | `lcs label-judge` / `lcs judge-agreement` | Label outputs on the judge's rubric; Spearman and quadratic-weighted kappa with bootstrap CIs |
 | `lcs error-analysis --run DIR` | Failure taxonomy (detectors, metrics, low judge scores) with counts and examples |
 | `lcs eval-gate` | CI gate: re-score frozen mock outputs, fail on regressions |
-| `lcs serve` | Coming in Phase 5 |
+| `lcs serve --config configs/serve.yaml` | FastAPI: `POST /simplify`, `POST /simplify/stream` (SSE), `GET /health`; vLLM on a GPU, transformers otherwise |
+| `lcs benchmark` | p50/p95 latency, tokens/s and $ per 1k clauses on a stated GPU, against the Claude API |
 
 ## Project structure
 
@@ -101,11 +103,13 @@ src/legal_simplifier/
 ├── rewards/          # meaning (NLI/BERTScore), SARI, FKGL band, entities, format; reward-hacking detectors
 ├── training/         # SFT (LoRA/QLoRA), GRPO, DPO pairs + training, ablations, tracking, model cards
 ├── eval/             # systems, metrics, stats, judge, labels + agreement, error analysis, report, gate, guards
-├── serving/          # inference service (to follow)
+├── serving/          # FastAPI app, engines (transformers / vLLM), analysis, Gradio demo, benchmark
 └── aws.py            # optional S3 helpers (`aws` extra)
 configs/              # real-run configs; configs/smoke/ for tiny CPU runs
 notebooks/            # Colab/Kaggle notebooks for the GPU stages
 scripts/              # Modal scripts for the GPU stages (one L4)
+docker/               # CPU and GPU serving images (docker-compose.yml at the root)
+space/                # Hugging Face Space app and README (not pushed)
 tests/                # unit tests and tiny-model integration tests
 docs/                 # decisions log, runbook
 ```

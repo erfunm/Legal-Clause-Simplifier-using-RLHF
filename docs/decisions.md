@@ -372,6 +372,11 @@ Further details:
 - **verbatim_copy:** the output is identical to the clause after normalisation, or ≥ 85% of its word 4-grams occur in the clause.
 - **word_salad:** two or more entities are present, and either one is repeated 3+ times, or fewer than 4 (or under 25%) of the remaining words are not entities. The share was first 40%. The tests showed that a grammatical, entity-dense legal sentence has about 35% non-entity words, so the threshold was lowered.
 - **modality_flip:** a prohibition loses its negation, a prohibition is added, or the obligation count falls while the permission count rises (must → may), or the reverse (may → must). Counts rather than presence, so clauses that mix "must" and "may" are still checked.
+  - *Revised at the start of Phase 5.* The eval-gate fixture showed two false positives on faithful rewrites: "…unless either party gives notice that it **will not** renew" and "…provided that **no termination shall** take effect before…". In both, the modal verb sits inside a *condition*, which qualifies the main statement rather than stating one. Because the detector feeds the GRPO `format` reward, false positives would teach the policy to avoid correct phrasing.
+  - `modality()` (used by `modality_flip` and `truncation`) now counts only main statements. A conditional clause, from a subordinating marker ("unless", "if", "provided (however) that", "except that/if", "in the event that", "as long as", "when", …) to the next `,` `;` `:` or sentence end, is removed first.
+  - Time-limit and prepositional markers ("within", "in 30 days", "until", "subject to", "except for") are phrases, not clauses, so they never start a span; otherwise "…within 30 days and shall not sublicense" would hide the prohibition.
+  - A fronted condition ends at its comma, so "If the Buyer pays late, the Seller may…" still counts. A flip *inside* a proviso is no longer this detector's to catch. That case is left to `condition_drop`, NLI coverage and the judge.
+  - Both fixture cases are regression tests. The gate fixture was rebuilt, and its `modality_flip` baseline is now 0.
 - **condition_drop** *(Phase 3 follow-up)*: the output has fewer condition, exception or time-limit markers than the clause.
   - Markers: "unless", "except", "provided (however) that", "subject to", "if", "only if", "until", "within", "notwithstanding", "in the event of/that", "on condition that", "as/so long as", "no later than", "even if" and "regardless of".
   - Plain-English equivalents count too: "only when", "but not if", "except if", "in case", "when", and "in 10 (business) days" for a time limit.
@@ -500,7 +505,12 @@ These are surface heuristics. A fluent paraphrase that changes the meaning gets 
   - The bootstrap resamples *outputs*, so two reviewers do not double n.
   - Fewer than 30 labelled outputs is flagged "not reliable".
   - Both statistics are cross-checked in the tests against scikit-learn and SciPy reference values.
-- **No acceptance bar has been chosen yet.** One will be set before the first real labels (a κ around 0.6 is a common "substantial agreement" line), and judge columns stay out of the README until agreement is reported.
+- **Acceptance bar** *(set at the start of Phase 5, before any real labels exist)*. A judge criterion is **validated** only if quadratic-weighted κ ≥ 0.6 **and** Spearman ρ ≥ 0.6, **and** the lower bound of each one's 95% bootstrap CI ≥ 0.4.
+  - 0.6 is the usual start of "substantial" agreement. The lower-bound rule stops a lucky point estimate from a small sample passing, so in practice the 50–100 labelled outputs are needed.
+  - `lcs judge-agreement` prints PASS or FAIL for each criterion, with the reasons, and writes `validated_criteria` to `agreement.json`.
+  - `lcs report` puts only validated criteria in the headline table and the bar chart, and uses only them for the quality axis of the quality-vs-cost chart. Every other criterion appears in a separate section marked **Not validated**.
+  - If a run has no `agreement.json` for its own judge backend, nothing counts as validated. Agreement measured for the open-weight judge does not validate the Claude judge, or the reverse.
+  - Judge-vs-judge agreement (Claude vs Granite) is informational and has no bar.
 
 ---
 
@@ -525,4 +535,54 @@ These are surface heuristics. A fluent paraphrase that changes the meaning gets 
   - The thresholds are the fixture's own baseline minus a tolerance.
   - A rule-degraded copy of the fixture fails the gate, and a test proves it.
   - What the gate guards is the scoring code (a change that stops a detector firing trips it), not model quality.
-  - Building it found two `modality_flip` false positives on faithful rewrites ("it will not renew"; "no termination shall take effect before…"). They are kept in the fixture and its baseline as known misses, to recalibrate on real outputs.
+  - Building it found two `modality_flip` false positives on faithful rewrites ("it will not renew"; "no termination shall take effect before…"). They are fixed at the start of Phase 5 (ADR-020) and kept as regression tests.
+
+---
+
+## ADR-028: Serving: FastAPI service and engines
+
+**Date:** 2026-10-29 · **Status:** accepted
+
+- **API** (`lcs serve`, `serving/app.py`):
+  - `POST /simplify` returns the simplification together with what a reader needs to check it: the clause's entities with whether each was kept, every reward-hacking detector that fired (as `warnings`, with the detector's detail), the reading grade before and after, token usage, latency, the request id, and a "not legal advice" notice. The analysis is the same code as training and evaluation, not a second implementation.
+  - `POST /simplify/stream` sends Server-Sent Events: `token` deltas, then one `result` with the full body. Errors after the stream has started are sent as an `error` event, because the HTTP status is already sent.
+  - `GET /health`.
+  - Bad input fails before the model is called: an empty clause gives 422, a clause over `max_clause_chars` gives 413, and an out-of-range `max_new_tokens` gives 422. Unhandled errors give 500 with the request id.
+- **Observability:**
+  - Every response carries `X-Request-ID`, echoed from the request header or generated.
+  - Each request writes one JSON log line: request id, route, status, latency, prompt and completion tokens, and engine.
+  - OpenTelemetry (`otel` extra, `otel.enabled`) instruments FastAPI and exports spans over OTLP/HTTP. It is off by default, and a missing extra only logs a warning.
+- **Engines.** `transformers` decodes greedily with real token streaming. `vllm` runs batched generation on a GPU, and its stream is the finished text as one event. `engine: auto` uses vLLM when CUDA and vLLM are present, and falls back to transformers with a warning if vLLM cannot load the model; asking for `vllm` explicitly never falls back. Support for the text-only Qwen3.5 checkpoint in vLLM is unverified (ADR-019), which is why the fallback exists.
+- **Dependencies.** vLLM 0.31.0 pins `torch==2.13` and `transformers<5.18`, while the `train` extra needs `transformers>=5.20` for TRL 1.16, so one environment cannot hold both. Serving needs neither PEFT nor TRL, because it loads merged weights. So:
+  - a new `infer` extra (`torch`, `transformers>=5.10`) and a `serve` extra (FastAPI, uvicorn, httpx);
+  - the GPU image installs `vllm==0.31.0` first and the package's `[serve,otel]` on top, keeping vLLM's torch and transformers;
+  - transformers 5.10.4 and 5.17.0 both ship `Qwen3_5ForCausalLM` (checked in their wheels);
+  - vLLM 0.32.0 was eleven days old, so 0.31.0 is pinned.
+
+---
+
+## ADR-029: Docker images and the Space
+
+**Date:** 2026-10-29 · **Status:** accepted
+
+- **CPU image** (`docker/Dockerfile`): two stages on `python:3.12-slim`. The builder runs `uv sync --frozen --no-dev` (lockfile CPU torch) with `infer,serve,otel,review`, dependencies first for layer caching. The runtime copies only the virtualenv, `configs/` and `space/`, runs as a non-root user, and has a `/health` healthcheck.
+- **GPU image** (`docker/Dockerfile.gpu`): `ubuntu:24.04` with vLLM (torch's wheels bundle the CUDA runtime, so no CUDA base image is needed).
+- **Build context:** `.dockerignore` keeps data, checkpoints, results, docs (including the untracked plan) and the git history out of it. The model is never baked in: `docker-compose.yml` mounts `./checkpoints` read-only and runs the CPU API, the demo (profile `demo`, calling the API) and the GPU API (profile `gpu`).
+- **Building:** `make docker-build` builds the CPU image and runs `lcs --help` in it, and CI builds it on every PR. The GPU image builds with `make docker-build-gpu` but is not built in CI (vLLM is several GB). No Docker daemon was available while writing this, so the first build ran in CI.
+- **Space** (`space/app.py`, `space/README.md` with HF metadata, `space/requirements.txt`, not pushed):
+  - The page shows the clause and the rewrite side by side, with the clause's entities marked green (kept) or red (missing) in one pass over the text, entity chips, detector warnings, the reading grade before and after, synthetic example clauses (each with a condition or exception), and a "not legal advice" banner.
+  - The backend is the local model (`LCS_MODEL`, or `configs/serve.yaml`) or a running API (`LCS_API_URL`).
+  - The logic lives in `serving/demo.py`; the tests drive it through the real API app with a fake engine.
+
+---
+
+## ADR-030: Benchmark and serving cost
+
+**Date:** 2026-10-29 · **Status:** accepted; first numbers from the Modal L4 run
+
+- **Passes.** `lcs benchmark` runs `n_clauses` held-out clauses after a warmup, in two passes:
+  - **latency**, one clause per call, as the API serves them: p50, p95 and mean;
+  - **throughput**, `batch_size` per call: completion tokens per second and seconds per clause.
+- **Cost per 1,000 clauses** = GPU $/h × seconds per clause × 1000 / 3600, from the throughput pass, on the stated GPU. The default config uses Modal's L4 price: $0.000222/s, so $0.7992/h, from modal.com/pricing, checked 2026-10-29. That is the GPU alone; Modal bills CPU and memory separately, and idle time is not counted, so the figure is a **lower bound** and is labelled as one. With no price set, the cost is reported as unknown, never guessed.
+- **Claude comparison.** The eval run's `claude` system's real spend, matched to its requests by key in the cost log at Batch prices. Without that, a Batch-price *estimate* is reported and labelled: input tokens are counted locally from the exact requests, and the output length is borrowed from the served model.
+- **Report.** Results go to `results/benchmarks/<name>.json`. `lcs report` takes local systems' cost from non-smoke benchmark files (matched by `model_label` = eval system name, newest file wins), so the quality-vs-cost chart fills in. Smoke results (CPU, tiny model) never count.
