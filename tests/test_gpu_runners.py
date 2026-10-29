@@ -28,7 +28,9 @@ NOTEBOOK = REPO_ROOT / "notebooks" / "sft_colab_kaggle.ipynb"
 RL_NOTEBOOK = REPO_ROOT / "notebooks" / "rl_colab_kaggle.ipynb"
 MODAL_SCRIPT = REPO_ROOT / "scripts" / "modal_sft.py"
 MODAL_RL_SCRIPT = REPO_ROOT / "scripts" / "modal_rl.py"
-NOTEBOOKS = [NOTEBOOK, RL_NOTEBOOK]
+EVAL_NOTEBOOK = REPO_ROOT / "notebooks" / "eval_colab_kaggle.ipynb"
+MODAL_EVAL_SCRIPT = REPO_ROOT / "scripts" / "modal_eval.py"
+NOTEBOOKS = [NOTEBOOK, RL_NOTEBOOK, EVAL_NOTEBOOK]
 
 
 # --- precision -------------------------------------------------------------------
@@ -368,3 +370,43 @@ def test_precision_fitting_covers_the_rl_stages() -> None:
         trainer = getattr(adapted, section)
         assert (trainer.bf16, trainer.fp16, adapted.model.dtype) == (False, True, "float32")
         assert adapt_precision(config, bf16_supported=True) is config
+
+
+# --- evaluation runners --------------------------------------------------------------------
+
+
+def test_eval_notebook_runs_only_free_systems_and_publishes_nothing() -> None:
+    text = "\n".join("".join(c["source"]) for c in _notebook(EVAL_NOTEBOOK)["cells"])
+    assert "!lcs evaluate --config {CONFIG} --skip-paid" in text
+    assert "--backend hf" in text and "!lcs error-analysis" in text
+    assert "--yes" not in text.replace(
+        "with `--yes`", ""
+    )  # paid steps are left to the user's machine
+    for publishing in ("push_to_hub", "!lcs push", "upload_folder", "upload_file", "create_repo"):
+        assert publishing not in text
+
+
+def test_modal_eval_script(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    module, registry = _import_modal_script(MODAL_EVAL_SCRIPT, monkeypatch)
+    assert set(registry["functions"]) == {"evaluate"}
+    kwargs = registry["functions"]["evaluate"]
+    assert (
+        kwargs["gpu"] == "L4"
+        and set(kwargs["volumes"]) == {module.VOLUME_PATH}
+        and "secrets" not in kwargs
+    )
+    added = sorted(
+        Path(args[0]).relative_to(REPO_ROOT).as_posix()
+        for name, args, _ in registry["calls"]
+        if name in ("add_local_file", "add_local_dir")
+    )
+    assert added == ["README.md", "configs", "pyproject.toml", "src"]
+    monkeypatch.chdir(tmp_path)
+    config = (REPO_ROOT / "configs" / "eval.yaml").read_text()
+    with pytest.raises(FileNotFoundError, match="modal volume put"):
+        module.run_eval(config, root=tmp_path)
+    golden = tmp_path / "data" / "golden"
+    golden.mkdir(parents=True)
+    (golden / "drafts.jsonl").write_text("")
+    with pytest.raises(FileNotFoundError, match="adapters not on the Volume"):
+        module.run_eval(config, root=tmp_path)
