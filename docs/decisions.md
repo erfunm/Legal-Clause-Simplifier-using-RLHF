@@ -51,7 +51,7 @@ Both models are pinned to a Hub revision in the configs.
 
 **Our setup:**
 1. Rely on TRL's fused chunked log-prob head. Do not enable Liger FLCE.
-2. Use `beta: 0.0` (the TRL default) for the main runs, so no reference model is loaded. For the `beta > 0` ablation with LoRA, the reference is the base model with adapters disabled, so no second copy of the weights is needed.
+2. Use `beta: 0.0` (the TRL default) for the main runs, so no reference model is loaded. For the `beta > 0` ablation, the reference is a frozen copy of the SFT LoRA adapter (TRL's `ref` adapter), so no second copy of the base weights is needed. *(Corrected in Phase 3: this first said "the base model with adapters disabled", which is what TRL does only for a freshly initialised adapter; see ADR-019.)*
 3. Generate with vLLM colocate mode where available. Sampling only needs last-position logits (`num_prompts × 248k`), which is small.
 4. If memory is still tight, apply these in order:
    1. Lower `max_completion_length` (simplified clauses rarely need more than about 256 tokens).
@@ -315,3 +315,99 @@ The model card says both. `adapter_config.json` records the base revision.
   - The notebook supports Colab and Kaggle, and three data sources: an upload, a Kaggle dataset, or the private Hub dataset.
   - Both call `adapt_precision`, which switches to fp16 autocast on fp32 weights for GPUs without bf16 (T4, P100); fp16 weights are avoided because of overflow risk.
   - Tests import the Modal script against a stub `modal` module, compile every notebook cell, and run the Modal function body on CPU with the tiny model.
+
+---
+
+## ADR-018: Four reward functions, logged separately, shared by GRPO, DPO and evaluation
+
+**Date:** 2026-10-28 · **Status:** accepted; weights to revisit after the first GRPO run
+
+The old reward was one clipped composite built for PPO. It is replaced by four functions in `rewards/suite.py`. GRPO receives them as separate `reward_funcs` with `reward_weights`, so TRL logs each one as `rewards/<name>/mean` and `/std`. `RewardSuite.score` combines the same functions with the same weights for DPO pair ranking and evaluation, so all three stages agree on what "better" means.
+
+| reward | default | range | why |
+|---|---|---|---|
+| `meaning` | NLI P(entailment) of clause → output, `cross-encoder/nli-deberta-v3-base` at a pinned revision (Apache-2.0, ~184M) | [0, 1] | Needs no reference and penalises added or contradicted content. The premise (the clause) is truncated first, so the output is always read in full. BERTScore-F1 against the reference is a config alternative. |
+| `simplicity` | mean of SARI and an FKGL band (grade 5–9, linear fall-off over 4 grades) | [0, 1] | SARI rewards the edits a good reference makes. The band has a **lower** edge, so stringing two-word sentences together to cut FKGL stops paying. Empty output scores 0. |
+| `entity_preservation` | normalised entity recall | [0, 1] | Reuses the Phase 1 entity checks. The normaliser now also equates "$1,000,000", "$1 million" and "one million dollars", and "twenty-five days" with "25 days". |
+| `format` | 0 when clean; −1 for empty output; otherwise penalties for copying, runaway length (more than 1.6× the clause's words) and each reward-hacking detector (ADR-020), clipped at −1 | [−1, 0] | Catches failures the other three can reward. |
+
+- **Weights:** all 1.0 at first. They set each reward's share of the summed reward; the sum is then normalised within each group (`scale_rewards: group`), so only the ratios between weights matter, not their overall size. `multi_objective_aggregation: normalize_then_sum` (GDPO) is available if one reward's variance dominates the logs.
+- **NLI direction:** NLI is one-directional, so an output that drops a sentence is still "entailed". Dropped content is therefore left to entity recall and the truncation detector, rather than added as a reverse-entailment check, which would punish legitimate simplification.
+- **Memory:** the NLI scorer is loaded once per process and scored in batches on the training GPU.
+
+---
+
+## ADR-019: GRPO and DPO continue the SFT adapter; the reference is a frozen copy of it
+
+**Date:** 2026-10-28 · **Status:** accepted
+
+The two ways to start RL from SFT were:
+- (a) merge the SFT adapter and train a fresh LoRA;
+- (b) keep training the SFT adapter itself.
+
+TRL 1.16 supports (b) directly. Pass a `PeftModel` that already has a trained `default` adapter and no `peft_config`; when `beta > 0`, TRL adds a frozen `ref` adapter, copies the weights into it, and computes the reference log-probs with it. The CPU test checks the copy is identical and frozen, and that no second base model is loaded.
+
+The KL is therefore measured against the SFT policy, which is the reference the pairs and the KL term should use. The extra memory is one LoRA's worth. Option (a) would also work for the KL, but it adds a second adapter to manage and ship.
+
+Further details:
+- `load_policy` refuses an adapter whose `adapter_config.json` names a different base model or revision than the config.
+- After training, the `ref` adapter is deleted before saving, so `adapter/` holds only the trained weights.
+- `merged/` is written as for SFT.
+
+**vLLM** is off by default (`grpo.use_vllm: false`). On CPU it cannot be tested. It is also not verified that vLLM loads the text-only `Qwen3_5ForCausalLM` checkpoint that SFT writes, and it would need its own install alongside the pinned torch. HF `generate` is slower but known to work. RUNBOOK §3 has a short check to run before switching to colocate mode.
+
+---
+
+## ADR-020: Reward-hacking detectors
+
+**Date:** 2026-10-28 · **Status:** accepted; thresholds to recalibrate on real outputs
+
+`rewards/hacking.py` has four deterministic detectors. Each has unit tests on hand-written examples, including faithful rewrites that must *not* fire.
+
+- **truncation:** the output drops modal statements (obligation / permission / prohibition, counted by phrase patterns; prohibitions are matched first, so "shall not" is not counted as "shall") **and** is either under half the clause's length or averages under 5 words per sentence. This is the "game FKGL with very short sentences that drop obligations" failure.
+- **verbatim_copy:** the output is identical to the clause after normalisation, or ≥ 85% of its word 4-grams occur in the clause.
+- **word_salad:** two or more entities are present, and either one is repeated 3+ times, or fewer than 4 (or under 25%) of the remaining words are not entities. The share was first 40%. The tests showed that a grammatical, entity-dense legal sentence has about 35% non-entity words, so the threshold was lowered.
+- **modality_flip:** a prohibition loses its negation, a prohibition is added, or the obligation count falls while the permission count rises (must → may), or the reverse (may → must). Counts rather than presence, so clauses that mix "must" and "may" are still checked.
+
+**How they change the reward:**
+- Each detector that fires subtracts its own configurable penalty in `format`.
+- `lcs build-preferences` never picks a flagged sample as `chosen`. A test shows a copy can have the top composite score when the copy penalty is off, and is still not chosen.
+- `lcs detect-hacking --outputs <jsonl>` runs the detectors over saved outputs (eval predictions or the pair-sampling files) and writes `summary.json` (rates overall and per `system`) and `flagged.jsonl`. Those files are where the README's before/after examples will come from once real runs exist; the README has none until then.
+
+These are surface heuristics. A fluent paraphrase that changes the meaning gets past them; the NLI reward and the Phase 4 LLM judge are the backstop.
+
+---
+
+## ADR-021: DPO pairs from SFT samples ranked by the composite reward
+
+**Date:** 2026-10-28 · **Status:** accepted
+
+- **Sampling:** `lcs build-preferences` samples 8 outputs per clause from the SFT model (adapter merged in memory, temperature 1.0, top-p 0.95, up to 384 new tokens) for the train and dev splits, and scores every sample with `RewardSuite.score`.
+- **Pairs:**
+  - `chosen` is the highest-scoring sample with **no** format problem or detector hit.
+  - `rejected` is the lowest-scoring sample.
+  - Clauses are skipped, with the reason counted in `stats.json`, when all samples are identical, no sample is clean, or the margin is under 0.1.
+- **Files:** every sample and its score breakdown is saved (`samples_<split>.jsonl`), so the pairs can be audited and scanned with `lcs detect-hacking`.
+- **Training:** DPO uses `beta 0.1`, the sigmoid loss, learning rate 1e-5 (LoRA), 1 epoch and an effective batch of 16. The reference is the frozen SFT copy (ADR-019).
+- **Judge-ranked pairs** (the spec's alternative) wait for the Phase 4 judge.
+
+---
+
+## ADR-022: Ablations as override files with one launcher
+
+**Date:** 2026-10-28 · **Status:** accepted
+
+`configs/ablations/*.yaml` each name a base (`../grpo.yaml`) and dotted overrides. Every run gets the same small budget (`grpo.max_steps: 300`) and its own output directory.
+
+| run | change |
+|---|---|
+| `ablation-baseline` | none (entity reward on, G = 8, beta 0) |
+| `ablation-entity-off` | `rewards.weights.entity_preservation: 0`. Still computed and logged, so its curve is comparable with the baseline's. |
+| `ablation-num-generations-2` | `grpo.num_generations: 2`. Completions per step stay at 32, so compute is equal and the step sees 16 clauses instead of 4. |
+| `ablation-beta-0.04` | `grpo.beta: 0.04` (KL to the frozen SFT copy) |
+
+- **Validation:** overrides are validated against the strict config schema, so a typo fails instead of silently running the baseline.
+- **Launchers:**
+  - `lcs ablate [--only NAME] [--dry-run]` resolves and prints each run's difference from the base, and trains them one after another on one GPU.
+  - `modal run scripts/modal_rl.py --stage ablations` runs them in parallel, one L4 each.
+- **Status:** none has been run. Single-seed runs at this budget show direction, not significance, and the report will say so.
