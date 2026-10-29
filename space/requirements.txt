@@ -1,0 +1,3 @@
+# The Space installs the project package (inference extras only) from the public repository.
+legal-simplifier[infer,serve] @ git+https://github.com/erfunm/Legal-Clause-Simplifier-using-RLHF.git@main
+gradio==6.31.0
