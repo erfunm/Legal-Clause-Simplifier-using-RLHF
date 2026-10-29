@@ -25,7 +25,10 @@ from legal_simplifier.training.gpu import adapt_precision
 from .conftest import REPO_ROOT, TINY_QWEN35, TINY_QWEN35_REVISION
 
 NOTEBOOK = REPO_ROOT / "notebooks" / "sft_colab_kaggle.ipynb"
+RL_NOTEBOOK = REPO_ROOT / "notebooks" / "rl_colab_kaggle.ipynb"
 MODAL_SCRIPT = REPO_ROOT / "scripts" / "modal_sft.py"
+MODAL_RL_SCRIPT = REPO_ROOT / "scripts" / "modal_rl.py"
+NOTEBOOKS = [NOTEBOOK, RL_NOTEBOOK]
 
 
 # --- precision -------------------------------------------------------------------
@@ -53,25 +56,46 @@ def test_gpus_without_bf16_train_fp16_autocast_on_fp32_weights() -> None:
 # --- notebook --------------------------------------------------------------------
 
 
-def _notebook() -> dict[str, Any]:
-    return json.loads(NOTEBOOK.read_text(encoding="utf-8"))
+def _notebook(path: Path = NOTEBOOK) -> dict[str, Any]:
+    return json.loads(path.read_text(encoding="utf-8"))
 
 
 def _python_source(cell: dict[str, Any]) -> str:
     """Cell source with IPython shell (``!``) and magic (``%``) lines blanked out."""
 
     lines = "".join(cell["source"]).splitlines()
-    return "\n".join("pass" if line.lstrip().startswith(("!", "%")) else line for line in lines)
+    return "\n".join(
+        line[: len(line) - len(line.lstrip())] + "pass"
+        if line.lstrip().startswith(("!", "%"))
+        else line
+        for line in lines
+    )
 
 
-def test_notebook_is_valid_and_every_code_cell_compiles() -> None:
-    nb = _notebook()
+@pytest.mark.parametrize("path", NOTEBOOKS, ids=lambda p: p.name)
+def test_notebook_is_valid_and_every_code_cell_compiles(path: Path) -> None:
+    nb = _notebook(path)
     assert nb["nbformat"] == 4
     code_cells = [c for c in nb["cells"] if c["cell_type"] == "code"]
     assert code_cells
     for i, cell in enumerate(code_cells):
         assert cell["outputs"] == [] and cell["execution_count"] is None  # committed clean
-        compile(_python_source(cell), f"{NOTEBOOK.name}[{i}]", "exec")
+        compile(_python_source(cell), f"{path.name}[{i}]", "exec")
+
+
+def test_rl_notebook_runs_every_stage_and_publishes_nothing() -> None:
+    text = "\n".join("".join(c["source"]) for c in _notebook(RL_NOTEBOOK)["cells"])
+    for command in (
+        "!lcs train-grpo",
+        "!lcs build-preferences",
+        "!lcs train-dpo",
+        "!lcs detect-hacking",
+    ):
+        assert command in text
+    assert 'discover("configs/ablations", [STAGE])' in text and "adapt_precision" in text
+    assert "memory/max_allocated_gb" in text
+    for publishing in ("push_to_hub", "!lcs push", "upload_folder", "upload_file", "create_repo"):
+        assert publishing not in text
 
 
 def test_notebook_trains_the_real_config_and_publishes_nothing() -> None:
@@ -153,15 +177,26 @@ def _stub_modal() -> types.ModuleType:
     return modal
 
 
-@pytest.fixture
-def modal_script(monkeypatch: pytest.MonkeyPatch) -> tuple[types.ModuleType, dict[str, Any]]:
+def _import_modal_script(
+    path: Path, monkeypatch: pytest.MonkeyPatch
+) -> tuple[types.ModuleType, dict[str, Any]]:
     stub = _stub_modal()
     monkeypatch.setitem(sys.modules, "modal", stub)
-    spec = importlib.util.spec_from_file_location("modal_sft", MODAL_SCRIPT)
+    spec = importlib.util.spec_from_file_location(path.stem, path)
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module, stub.registry  # type: ignore[attr-defined]
+
+
+@pytest.fixture
+def modal_script(monkeypatch: pytest.MonkeyPatch) -> tuple[types.ModuleType, dict[str, Any]]:
+    return _import_modal_script(MODAL_SCRIPT, monkeypatch)
+
+
+@pytest.fixture
+def modal_rl_script(monkeypatch: pytest.MonkeyPatch) -> tuple[types.ModuleType, dict[str, Any]]:
+    return _import_modal_script(MODAL_RL_SCRIPT, monkeypatch)
 
 
 def test_modal_functions_request_one_l4_with_the_volume(
@@ -253,3 +288,82 @@ def test_modal_body_trains_from_relative_paths_on_the_volume(
     assert run_dir == tmp_path / "checkpoints" / "sft"
     assert (run_dir / "adapter" / "adapter_model.safetensors").exists()
     assert (run_dir / "adapter" / "README.md").exists()
+
+
+# --- Modal RL script -----------------------------------------------------------------
+
+
+def test_modal_rl_functions_and_image(
+    modal_rl_script: tuple[types.ModuleType, dict[str, Any]],
+) -> None:
+    module, registry = modal_rl_script
+    assert set(registry["functions"]) == {"train", "train_with_wandb"}
+    for kwargs in registry["functions"].values():
+        assert kwargs["gpu"] == "L4" and set(kwargs["volumes"]) == {module.VOLUME_PATH}
+    assert registry["functions"]["train_with_wandb"]["secrets"] == [("secret", "wandb")]
+    assert "secrets" not in registry["functions"]["train"]
+    added = sorted(
+        Path(args[0]).relative_to(REPO_ROOT).as_posix()
+        for name, args, _ in registry["calls"]
+        if name in ("add_local_file", "add_local_dir")
+    )
+    assert added == ["README.md", "configs", "pyproject.toml", "src"]
+    assert module.STAGES == ("grpo", "dpo", "ablations")
+
+
+def test_modal_rl_lists_the_ablations_from_local_yaml(
+    modal_rl_script: tuple[types.ModuleType, dict[str, Any]],
+) -> None:
+    module, _ = modal_rl_script
+    directory = REPO_ROOT / "configs" / "ablations"
+    assert set(module.ablation_names(directory)) == {
+        "ablation-baseline",
+        "ablation-entity-off",
+        "ablation-num-generations-2",
+        "ablation-beta-0.04",
+    }
+    assert module.ablation_names(directory, "ablation-beta-0.04") == ["ablation-beta-0.04"]
+    with pytest.raises(ValueError, match="unknown ablation"):
+        module.ablation_names(directory, "nope")
+
+
+def test_modal_rl_body_explains_missing_inputs(
+    modal_rl_script: tuple[types.ModuleType, dict[str, Any]],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module, _ = modal_rl_script
+    monkeypatch.chdir(tmp_path)
+    grpo_yaml = (REPO_ROOT / "configs" / "grpo.yaml").read_text()
+    with pytest.raises(FileNotFoundError, match=r"modal_sft\.py first"):
+        module.run_stage("grpo", grpo_yaml, root=tmp_path)
+    adapter = tmp_path / "checkpoints" / "sft" / "adapter"
+    adapter.mkdir(parents=True)
+    (adapter / "adapter_config.json").write_text("{}")
+    with pytest.raises(FileNotFoundError, match="modal volume put"):
+        module.run_stage("grpo", grpo_yaml, root=tmp_path)
+    with pytest.raises(FileNotFoundError, match="modal volume put"):
+        module.run_stage("dpo", (REPO_ROOT / "configs" / "dpo.yaml").read_text(), root=tmp_path)
+    with pytest.raises(FileNotFoundError, match="modal volume put"):
+        module.run_stage(
+            "ablations",
+            "ablation-entity-off",
+            root=tmp_path,
+            ablation_dir=REPO_ROOT / "configs" / "ablations",
+        )
+    with pytest.raises(ValueError, match="unknown stage"):
+        module.run_stage("ppo", "", root=tmp_path)
+
+
+def test_precision_fitting_covers_the_rl_stages() -> None:
+    from legal_simplifier.config import DPOConfigFile, GRPOConfigFile
+
+    for path, model, section in (
+        ("grpo.yaml", GRPOConfigFile, "grpo"),
+        ("dpo.yaml", DPOConfigFile, "dpo"),
+    ):
+        config = load_config(REPO_ROOT / "configs" / path, model)
+        adapted = adapt_precision(config, bf16_supported=False)
+        trainer = getattr(adapted, section)
+        assert (trainer.bf16, trainer.fp16, adapted.model.dtype) == (False, True, "float32")
+        assert adapt_precision(config, bf16_supported=True) is config
