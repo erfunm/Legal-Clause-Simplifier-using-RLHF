@@ -1,0 +1,15 @@
+# Only pyproject.toml, uv.lock, README.md, src/, configs/ and space/ are needed in the build context.
+.git
+.github
+.venv
+**/__pycache__
+.pytest_cache
+.ruff_cache
+data
+checkpoints
+results
+notebooks
+tests
+docs
+scripts
+*.zip

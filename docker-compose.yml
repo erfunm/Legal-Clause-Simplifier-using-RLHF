@@ -1,0 +1,45 @@
+# Local runs. The model is mounted from ./checkpoints (train it first, docs/RUNBOOK.md §2-3).
+#   docker compose up api                     CPU API on http://localhost:8000
+#   docker compose --profile demo up          + the Gradio demo on http://localhost:7860, calling the API
+#   docker compose --profile gpu up api-gpu   GPU API (vLLM) on http://localhost:8001
+services:
+  api:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    image: legal-simplifier:cpu
+    ports: ["8000:8000"]
+    volumes:
+      - ./checkpoints:/app/checkpoints:ro
+      - hf-cache:/home/app/.cache/huggingface
+
+  demo:
+    profiles: [demo]
+    image: legal-simplifier:cpu
+    depends_on: [api]
+    command: ["python", "space/app.py"]
+    ports: ["7860:7860"]
+    environment:
+      LCS_API_URL: http://api:8000
+      GRADIO_SERVER_NAME: 0.0.0.0
+
+  api-gpu:
+    profiles: [gpu]
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.gpu
+    image: legal-simplifier:gpu
+    ports: ["8001:8000"]
+    volumes:
+      - ./checkpoints:/app/checkpoints:ro
+      - hf-cache:/home/app/.cache/huggingface
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+
+volumes:
+  hf-cache:
