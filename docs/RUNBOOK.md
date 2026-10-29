@@ -197,6 +197,41 @@ Copy two or three before/after examples per failure type from `results/eval-v1/e
 
 **CI eval gate:** `make eval-gate` re-scores the frozen mock fixture in `tests/fixtures/eval_gate/`. If you change a detector or the entity matching on purpose, rebuild the fixture (`uv run python tests/fixtures/build_eval_gate.py`) and review the new `thresholds.json` in the PR.
 
+## 5. Serving, the demo and the benchmark (Phase 5)
+
+**Needs:** a merged model (`checkpoints/grpo/merged`, from §3). Nothing here publishes anything; the Space push is a separate decision.
+
+```bash
+# 5a. The API locally (transformers; CPU works, slowly).
+uv sync --extra infer --extra serve
+uv run lcs serve --config configs/serve.yaml                      # http://127.0.0.1:8000/docs
+curl -s localhost:8000/simplify -H 'content-type: application/json' \
+     -d '{"clause": "The Licensee may terminate on 30 days notice, unless the breach is cured."}'
+curl -N localhost:8000/simplify/stream -H 'content-type: application/json' -d '{"clause": "..."}'
+
+# 5b. Docker (needs Docker; the model is mounted from ./checkpoints, not baked in).
+make docker-build                                    # CPU image (CI builds it too)
+docker compose up api                                # API on :8000
+docker compose --profile demo up                     # + the Gradio demo on :7860, calling the API
+make docker-build-gpu && docker compose --profile gpu up api-gpu   # vLLM; needs the NVIDIA container toolkit
+
+# 5c. The benchmark on one L4 (vLLM, falls back to transformers), then the report's cost chart.
+modal run scripts/modal_benchmark.py                 # or --engine transformers for the comparison
+modal volume get legal-simplifier results/benchmarks results/benchmarks
+uv run lcs report --results-dir results              # quality vs cost now has the local systems
+```
+
+Check `gpu_hourly_usd` and `gpu_price_source` in `configs/benchmark.yaml` before the run. The figure is the GPU price only (ADR-030). For the Claude comparison, `eval_run` must point at the eval run that includes the `claude` system, with the cost log present.
+
+Optional tracing: set `otel.enabled: true` in `configs/serve.yaml`, install the `otel` extra, and point `otel.endpoint` (or the `OTEL_*` variables) at a collector.
+
+**PUBLISHING: the Space (only when you decide to).** The Space needs the merged model on the Hub first, and both steps publish:
+
+1. Push the model, for example as a private repo: `huggingface-cli upload <user>/legal-clause-simplifier checkpoints/grpo/merged --private`. Its `README.md` model card was written by the training run.
+2. Create a Gradio Space, copy `space/app.py`, `space/README.md` and `space/requirements.txt` into it, and set the Space variable `LCS_MODEL=<user>/legal-clause-simplifier`.
+
+Read the Space README's "not legal advice" text before making it public.
+
 ## Later phases
 
 GRPO/DPO training, evaluation (including the human judge-validation labels), serving and Hub publishing will be added here as they are built. Publishing steps always need explicit confirmation.
