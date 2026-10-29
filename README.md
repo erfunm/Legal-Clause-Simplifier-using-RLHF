@@ -6,7 +6,7 @@ Post-training a small open model (Qwen3.5-0.8B) to rewrite legal contract clause
 > - the engineering foundation: package, configs, reward components, SFT, tests and CI;
 > - the data pipeline: CUAD clause extraction, contract-level splits, silver references through the Claude Batches API, a golden test set and the tool for reviewing it;
 > - the SFT baseline: LoRA/QLoRA with PEFT, Trackio or W&B logging, adapter and merged weights, model cards, and a Colab/Kaggle notebook and Modal script for the GPU run;
-> - RL post-training: GRPO from the SFT adapter with four separately logged rewards, DPO on reward-ranked pairs, reward-hacking detectors, and three ablations with one launcher.
+> - RL post-training: GRPO from the SFT adapter with four separately logged rewards, DPO on reward-ranked pairs, reward-hacking detectors, and four ablations with one launcher.
 >
 > The real reference run, the golden-set review and the GPU training runs have not happened yet. RL training, evaluation and serving are being added phase by phase. See [`docs/decisions.md`](docs/decisions.md) for the design decisions and [`docs/RUNBOOK.md`](docs/RUNBOOK.md) for the steps that need keys, a GPU or a person.
 
@@ -36,20 +36,21 @@ GRPO keeps training the SFT LoRA adapter. When a KL term is used, the reference 
 
 | reward | what it measures |
 |---|---|
-| `meaning` | NLI entailment of the clause → the rewrite (DeBERTa-v3 cross-encoder); BERTScore against the reference as an option |
+| `meaning` | NLI entailment of the clause → the rewrite (DeBERTa-v3 cross-encoder). Options: sentence-level reverse NLI, which checks that each part of the clause is covered, or BERTScore against the reference |
 | `simplicity` | SARI against the reference, averaged with a reading-grade band (FKGL 5–9) that also penalises choppy text below it |
 | `entity_preservation` | share of parties, dates, amounts, durations and defined terms kept, with formats normalised ("$1,000,000" = "one million dollars") |
 | `format` | penalties for empty output, verbatim copying, runaway length and the reward-hacking detectors below |
 
-**Reward hacking.** Four detectors flag the ways a policy can raise these rewards without simplifying:
+**Reward hacking.** Five detectors flag the ways a policy can raise these rewards without simplifying:
 - truncation that drops obligations, including very short sentences that cut the reading grade;
 - verbatim copying of the clause;
 - entity word salad;
-- must / may / must-not flips.
+- must / may / must-not flips;
+- dropped conditions and exceptions ("unless", "provided that", "within"). One-way NLI cannot see these: a rewrite that only deletes the exception is still entailed.
 
 They are subtracted in the `format` reward, a flagged sample is never picked as a DPO `chosen`, and `lcs detect-hacking` runs them over saved outputs. *Before/after examples from real runs: pending first full run* (see `docs/RUNBOOK.md` §3).
 
-**Ablations** (configured, not yet run): entity reward on vs off, `num_generations` 2 vs 8, and KL `beta` 0 vs 0.04. They run on one equal budget, with `lcs ablate` or in parallel on Modal.
+**Ablations** (configured, not yet run): entity reward on vs off, `num_generations` 2 vs 8, KL `beta` 0 vs 0.04, and clause → output NLI vs sentence-level reverse NLI for `meaning`. They run on one equal budget, with `lcs ablate` or in parallel on Modal.
 
 ## Quickstart (CPU)
 
