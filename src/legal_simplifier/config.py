@@ -7,7 +7,7 @@ silently ignored.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, TypeVar
+from typing import Any, Literal, TypeVar
 
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -123,6 +123,7 @@ class TrackingConfig(StrictModel):
 class SFTConfigFile(StrictModel):
     """Contents of ``configs/sft*.yaml``."""
 
+    stage: Literal["sft"] = "sft"
     experiment: ExperimentConfig
     data: DataConfig = Field(default_factory=DataConfig)
     model: ModelConfig = Field(default_factory=ModelConfig)
@@ -139,30 +140,212 @@ class SFTConfigFile(StrictModel):
 
 
 class RewardWeights(StrictModel):
-    bertscore: float = 0.5
-    sari: float = 0.3
-    readability: float = 0.2
-    entity_penalty: float = 1.0
+    """Weights of the four reward functions; GRPO passes them as ``reward_weights``.
+
+    A weight of 0 keeps the function computed and logged but out of the advantage,
+    which is how the entity ablation stays comparable.
+    """
+
+    meaning: float = 1.0
+    simplicity: float = 1.0
+    entity_preservation: float = 1.0
+    format: float = 1.0
+
+
+class MeaningConfig(StrictModel):
+    """``nli``: P(entailment | clause -> output), needs no reference. ``bertscore``: F1 vs reference."""
+
+    method: str = Field(default="nli", pattern="^(nli|bertscore)$")
+    nli_model: str = "cross-encoder/nli-deberta-v3-base"
+    nli_revision: str | None = "6c749ce3425cd33b46d187e45b92bbf96ee12ec7"
+    entailment_label: str | None = None
+    """Label name of the entailment class; ``None`` finds the label containing "entail"."""
+    max_length: int = 512
+    batch_size: int = 32
+    bertscore_model: str = "roberta-large"
+    bertscore_rescale_with_baseline: bool = True
+
+
+class SimplicityConfig(StrictModel):
+    """SARI against the reference, a reading-grade band, or their mean (``both``)."""
+
+    method: str = Field(default="both", pattern="^(sari|fkgl_band|both)$")
+    fkgl_low: float = 5.0
+    fkgl_high: float = 9.0
+    """Full score for an FKGL inside [low, high]; it falls linearly to 0 over ``fkgl_margin``."""
+    fkgl_margin: float = 4.0
+
+    @model_validator(mode="after")
+    def _check_band(self) -> SimplicityConfig:
+        if not self.fkgl_low < self.fkgl_high or self.fkgl_margin <= 0:
+            raise ValueError("need fkgl_low < fkgl_high and fkgl_margin > 0")
+        return self
+
+
+class FormatConfig(StrictModel):
+    """Penalties in [-1, 0]: empty output, verbatim copying, runaway length, and the
+    reward-hacking detectors (see :mod:`legal_simplifier.rewards.hacking`)."""
+
+    copy_threshold: float = 0.85
+    """Token 4-gram overlap with the clause at or above which the output counts as a copy."""
+    max_length_ratio: float = 1.6
+    """Output words / clause words above which the output counts as runaway."""
+    copy_penalty: float = 1.0
+    runaway_penalty: float = 0.5
+    truncation_penalty: float = 0.5
+    word_salad_penalty: float = 1.0
+    modality_flip_penalty: float = 0.5
 
 
 class RewardConfig(StrictModel):
-    """Composite reward settings shared by GRPO, DPO pair ranking and evaluation."""
+    """Reward functions shared by GRPO, DPO pair ranking and evaluation."""
 
     weights: RewardWeights = Field(default_factory=RewardWeights)
-    bertscore_model: str = "roberta-large"
-    bertscore_rescale_with_baseline: bool = True
-    bertscore_batch_size: int = 32
-    readability_target_grade: float = 8.0
-    missing_entity_penalty: float = 1.0
-    """Penalty when every entity is missing; scaled by the fraction missing."""
-    clip_min: float = -1.0
-    clip_max: float = 1.5
+    meaning: MeaningConfig = Field(default_factory=MeaningConfig)
+    simplicity: SimplicityConfig = Field(default_factory=SimplicityConfig)
+    format: FormatConfig = Field(default_factory=FormatConfig)
+
+
+class PolicyConfig(StrictModel):
+    """GRPO and DPO keep training the SFT LoRA adapter on top of ``model`` (the base)."""
+
+    sft_adapter: Path = Path("checkpoints/sft/adapter")
+
+
+class RLDataConfig(StrictModel):
+    train_path: Path = Path("data/processed/train.jsonl")
+    include_category: bool = True
+    max_train_samples: int | None = None
+    """Use only the first N clauses (after a seeded shuffle); ``None`` uses all."""
+
+
+class RLTrainingCommon(StrictModel):
+    """Trainer settings shared by GRPO and DPO."""
+
+    output_dir: Path
+    learning_rate: float = 1.0e-5
+    per_device_train_batch_size: int = 8
+    gradient_accumulation_steps: int = 4
+    num_train_epochs: float = 1.0
+    max_steps: int = -1
+    warmup_steps: float = 0.0
+    lr_scheduler_type: str = "constant_with_warmup"
+    weight_decay: float = 0.0
+    max_grad_norm: float = 1.0
+    bf16: bool = False
+    fp16: bool = False
+    gradient_checkpointing: bool = False
+    logging_steps: int = 5
+    save_strategy: str = "steps"
+    save_steps: int = 100
+    save_total_limit: int | None = 2
+    use_cpu: bool = False
+    save_merged: bool = True
+
+
+class GRPOTrainingConfig(RLTrainingCommon):
+    output_dir: Path = Path("checkpoints/grpo")
+    num_generations: int = 8
+    max_completion_length: int = 256
+    temperature: float = 1.0
+    top_p: float = 1.0
+    beta: float = 0.0
+    """KL weight. 0 loads no reference; > 0 adds a frozen copy of the SFT adapter as reference."""
+    loss_type: str = "dapo"
+    epsilon: float = 0.2
+    num_iterations: int = 1
+    steps_per_generation: int | None = None
+    scale_rewards: str = "group"
+    multi_objective_aggregation: str = Field(
+        default="sum_then_normalize", pattern="^(sum_then_normalize|normalize_then_sum)$"
+    )
+    mask_truncated_completions: bool = True
+    """Completions that hit max_completion_length get no gradient (no reward for rambling)."""
+    use_vllm: bool = False
+    vllm_mode: str = Field(default="colocate", pattern="^(colocate|server)$")
+    vllm_gpu_memory_utilization: float = 0.3
+    log_completions: bool = True
+    """Sample completions go to the tracker's table (never to the Hub)."""
 
     @model_validator(mode="after")
-    def _check_clip(self) -> RewardConfig:
-        if self.clip_min >= self.clip_max:
-            raise ValueError("clip_min must be below clip_max")
+    def _check_group(self) -> GRPOTrainingConfig:
+        per_generation = self.per_device_train_batch_size * (
+            self.steps_per_generation or self.gradient_accumulation_steps
+        )
+        if self.num_generations < 2 or per_generation % self.num_generations:
+            raise ValueError(
+                f"num_generations ({self.num_generations}) must be >= 2 and divide the "
+                f"completions per generation round ({per_generation} = batch x steps_per_generation)"
+            )
         return self
+
+
+class GRPOConfigFile(StrictModel):
+    """Contents of ``configs/grpo.yaml`` (and the resolved ablation configs)."""
+
+    stage: Literal["grpo"] = "grpo"
+    experiment: ExperimentConfig
+    data: RLDataConfig = Field(default_factory=RLDataConfig)
+    model: ModelConfig = Field(default_factory=ModelConfig)
+    policy: PolicyConfig = Field(default_factory=PolicyConfig)
+    rewards: RewardConfig = Field(default_factory=RewardConfig)
+    tracking: TrackingConfig = Field(default_factory=TrackingConfig)
+    grpo: GRPOTrainingConfig = Field(default_factory=GRPOTrainingConfig)
+
+
+class PairsConfig(StrictModel):
+    """Preference pairs: sample N outputs per clause from the SFT model, rank by the reward."""
+
+    output_dir: Path = Path("data/preferences")
+    splits: list[str] = Field(default_factory=lambda: ["train", "dev"])
+    data_dir: Path = Path("data/processed")
+    max_clauses: int | None = None
+    n_samples: int = 8
+    temperature: float = 1.0
+    top_p: float = 0.95
+    max_new_tokens: int = 256
+    batch_size: int = 8
+    """Clauses per generate() call (each returns n_samples sequences)."""
+    min_margin: float = 0.1
+    """Skip a clause when best and worst composite rewards differ by less than this."""
+    require_clean_chosen: bool = True
+    """The chosen output must trip no format problem or reward-hacking detector."""
+
+    @model_validator(mode="after")
+    def _check(self) -> PairsConfig:
+        if self.n_samples < 2:
+            raise ValueError("n_samples must be at least 2 to form a pair")
+        return self
+
+
+class DPOTrainingConfig(RLTrainingCommon):
+    output_dir: Path = Path("checkpoints/dpo")
+    learning_rate: float = 5.0e-6
+    per_device_train_batch_size: int = 4
+    beta: float = 0.1
+    loss_type: list[str] = Field(default_factory=lambda: ["sigmoid"])
+    max_length: int = 1024
+    eval_strategy: str = "steps"
+    eval_steps: int = 50
+
+
+class DPODataConfig(StrictModel):
+    include_category: bool = True
+    """The clauses come from ``pairs.data_dir``; this only shapes the prompt."""
+
+
+class DPOConfigFile(StrictModel):
+    """Contents of ``configs/dpo.yaml``: pair building and DPO training."""
+
+    stage: Literal["dpo"] = "dpo"
+    experiment: ExperimentConfig
+    data: DPODataConfig = Field(default_factory=DPODataConfig)
+    model: ModelConfig = Field(default_factory=ModelConfig)
+    policy: PolicyConfig = Field(default_factory=PolicyConfig)
+    rewards: RewardConfig = Field(default_factory=RewardConfig)
+    pairs: PairsConfig = Field(default_factory=PairsConfig)
+    tracking: TrackingConfig = Field(default_factory=TrackingConfig)
+    dpo: DPOTrainingConfig = Field(default_factory=DPOTrainingConfig)
 
 
 class ExtractionConfig(StrictModel):

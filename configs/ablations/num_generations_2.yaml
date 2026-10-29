@@ -1,0 +1,7 @@
+# GRPO ablation, resolved on top of configs/grpo.yaml. Run: lcs ablate (or modal run scripts/modal_rl.py --stage ablations).
+base: ../grpo.yaml
+name: ablation-num-generations-2
+description: "2 generations per clause instead of 8 (same 32 completions per step, so 16 clauses)"
+overrides:
+  grpo.num_generations: 2
+  grpo.max_steps: 300           # small, equal budget for every ablation run

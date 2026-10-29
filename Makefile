@@ -25,13 +25,18 @@ test:  ## Fast unit tests (no model downloads)
 test-all:  ## Unit tests plus tiny-model tests
 	uv run pytest
 
-smoke:  ## End-to-end pipeline on fixture data with a tiny random model (outputs are not results)
+smoke:  ## Data -> SFT -> GRPO -> DPO -> hacking scan on fixtures with tiny random models (outputs are not results)
 	rm -rf data/smoke
 	uv run lcs prepare-data --config $(SMOKE_CONFIG)
 	uv run lcs generate-references --config $(SMOKE_CONFIG)
 	uv run lcs build-golden --config $(SMOKE_CONFIG)
 	uv run lcs dataset-card --config $(SMOKE_CONFIG)
 	uv run lcs train-sft --config configs/smoke/sft.yaml
+	uv run lcs train-grpo --config configs/smoke/grpo.yaml
+	uv run lcs build-preferences --config configs/smoke/dpo.yaml
+	uv run lcs train-dpo --config configs/smoke/dpo.yaml
+	uv run lcs detect-hacking --outputs data/smoke/preferences/samples_train.jsonl
+	uv run lcs ablate --dry-run
 
 clean:
 	rm -rf data/smoke checkpoints/smoke .pytest_cache .ruff_cache

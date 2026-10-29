@@ -1,0 +1,73 @@
+# GRPO from the SFT LoRA adapter with four separately logged rewards
+# (rewards/meaning, rewards/simplicity, rewards/entity_preservation, rewards/format).
+# Real run: one 24 GB GPU (NVIDIA L4) in bf16. Not run yet.
+#   modal run scripts/modal_rl.py --stage grpo
+#   notebooks/rl_colab_kaggle.ipynb
+#   uv run lcs train-grpo --config configs/grpo.yaml
+# Logits memory with the 248k vocabulary: docs/decisions.md ADR-002 and ADR-018.
+experiment:
+  name: grpo-qwen3.5-0.8b
+  seed: 42
+
+data:
+  train_path: data/processed/train.jsonl
+  include_category: true
+
+model:
+  name_or_path: Qwen/Qwen3.5-0.8B
+  revision: 2fc06364715b967f1860aea9cf38778875588b17
+  dtype: bfloat16
+
+policy:
+  sft_adapter: checkpoints/sft/adapter   # GRPO keeps training this adapter
+
+rewards:
+  weights: {meaning: 1.0, simplicity: 1.0, entity_preservation: 1.0, format: 1.0}
+  meaning:
+    method: nli                           # nli (no reference needed) | bertscore
+    nli_model: cross-encoder/nli-deberta-v3-base
+    nli_revision: 6c749ce3425cd33b46d187e45b92bbf96ee12ec7
+    max_length: 512
+    batch_size: 32
+  simplicity:
+    method: both                          # sari | fkgl_band | both (mean)
+    fkgl_low: 5.0
+    fkgl_high: 9.0
+    fkgl_margin: 4.0
+  format:
+    copy_threshold: 0.85
+    max_length_ratio: 1.6
+    copy_penalty: 1.0
+    runaway_penalty: 0.5
+    truncation_penalty: 0.5
+    word_salad_penalty: 1.0
+    modality_flip_penalty: 0.5
+
+tracking:
+  backend: trackio
+  project: legal-clause-simplifier
+
+grpo:
+  output_dir: checkpoints/grpo
+  num_generations: 8
+  max_completion_length: 384     # first knob to lower if memory is tight (ADR-002)
+  temperature: 1.0
+  beta: 0.0                      # no reference forward; the beta ablation sets 0.04
+  loss_type: dapo
+  scale_rewards: group
+  multi_objective_aggregation: sum_then_normalize
+  mask_truncated_completions: true
+  learning_rate: 2.0e-5
+  per_device_train_batch_size: 8 # x 4 accumulation = 32 completions = 4 clauses x 8 per step
+  gradient_accumulation_steps: 4
+  max_steps: 500
+  warmup_steps: 0.03
+  lr_scheduler_type: constant_with_warmup
+  bf16: true
+  gradient_checkpointing: true
+  logging_steps: 5
+  save_strategy: steps
+  save_steps: 100
+  use_vllm: false                # see RUNBOOK §3 before turning on vLLM colocate
+  log_completions: true
+  save_merged: true

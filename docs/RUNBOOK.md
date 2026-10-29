@@ -106,6 +106,52 @@ Check `lora.json`: `unmatched_targets` must be empty, and `left_out` should list
 - **Re-merge or rewrite the cards later:** `uv run lcs merge-adapter --run-dir checkpoints/sft` and `uv run lcs model-card --run-dir checkpoints/sft`.
 - **PUBLISHING:** nothing pushes models to the Hub yet. Publishing the dashboard needs `tracking.trackio_space_id`, and the code refuses an ambient `TRACKIO_SPACE_ID`. Ask before setting either.
 
+## 3. RL post-training: GRPO, DPO and ablations (Phase 3)
+
+**Needs:** the SFT run (§2: `checkpoints/sft/adapter/`), `data/processed/` (§1) and one 24 GB GPU (NVIDIA L4). A Hugging Face login is not needed: the base model and the NLI reward model (`cross-encoder/nli-deberta-v3-base`, about 0.7 GB) are public. Nothing has been run yet.
+
+```bash
+# 3a. Modal (same Volume as §2; the SFT adapter is already on it).
+modal run scripts/modal_rl.py --stage grpo               # configs/grpo.yaml -> checkpoints/grpo/
+modal run scripts/modal_rl.py --stage dpo                # pairs -> data/preferences/, then checkpoints/dpo/
+modal run scripts/modal_rl.py --stage ablations          # 4 runs in parallel, one L4 each
+modal volume get legal-simplifier checkpoints/grpo checkpoints/grpo
+modal volume get legal-simplifier checkpoints/dpo checkpoints/dpo
+modal volume get legal-simplifier checkpoints/ablations checkpoints/ablations
+modal volume get legal-simplifier data/preferences data/preferences
+
+# 3b. Colab or Kaggle: notebooks/rl_colab_kaggle.ipynb, with STAGE = "grpo", "dpo" or an
+#     ablation name. Upload `zip -r rl_inputs.zip data/processed checkpoints/sft/adapter`.
+
+# 3c. Any CUDA machine.
+uv run lcs train-grpo --config configs/grpo.yaml
+uv run lcs build-preferences --config configs/dpo.yaml && uv run lcs train-dpo --config configs/dpo.yaml
+uv run lcs ablate --dry-run     # prints the 4 runs and their differences from grpo.yaml
+uv run lcs ablate               # runs them one after another
+```
+
+**What to check while it runs** (Trackio: `trackio show --project legal-clause-simplifier`; or W&B):
+- `rewards/meaning/mean`, `rewards/simplicity/mean`, `rewards/entity_preservation/mean` and `rewards/format/mean`, each on its own curve. `rewards/format/mean` falling towards −1 means the policy has found a hack.
+- `memory/max_allocated_gb`, the real peak for ADR-002. If it is near 24 GB or the run OOMs, lower these in order: `grpo.max_completion_length` (384), then `per_device_train_batch_size` (raise `gradient_accumulation_steps` to keep 32 completions per step), then `num_generations` (8 → 4).
+- `completions/clipped_ratio`: a high value means many outputs hit the length limit. Those get no gradient (`mask_truncated_completions`).
+- For DPO, `data/preferences/stats.json`: pairs per split, the skip reasons, and which problems the samples had.
+
+**After training, look for reward hacking in the outputs:**
+
+```bash
+uv run lcs detect-hacking --outputs data/preferences/samples_train.jsonl   # SFT samples
+# After Phase 4: the same on each system's saved predictions (rows with a `system` field).
+```
+
+Read `flagged.jsonl` for before/after examples. If a hack is common, raise its penalty under `rewards.format` (or add a detector), rerun, and record the change in `docs/decisions.md`. Copy the real examples into the README; there are none there until then.
+
+**Optional, vLLM colocate generation:** faster sampling, but unverified with the text-only Qwen3.5 checkpoint (ADR-019). To try it:
+1. Add `vllm` to the image's `pip install` line in `scripts/modal_rl.py`, at a version that supports the pinned torch.
+2. Set `grpo.use_vllm: true` and `grpo.max_steps: 5`.
+3. Check that the run starts and that `rewards/*` move like the HF-generate run before using it for the real runs.
+
+**PUBLISHING:** nothing pushes models or completions to the Hub (`log_completions_hub_repo` is always unset). Ask before adding that.
+
 ## Later phases
 
 GRPO/DPO training, evaluation (including the human judge-validation labels), serving and Hub publishing will be added here as they are built. Publishing steps always need explicit confirmation.

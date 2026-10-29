@@ -1,0 +1,46 @@
+# CPU smoke test of pair building + DPO with the tiny random models. Random outputs trip
+# every detector, so the clean-chosen rule and the margin are relaxed here only.
+experiment:
+  name: smoke-dpo
+  seed: 0
+  smoke: true
+
+model:
+  name_or_path: trl-internal-testing/tiny-Qwen3_5ForConditionalGeneration-NoThink
+  revision: c21e64ab01a61fe5675253768d359262f6a19ab6
+  dtype: float32
+
+policy:
+  sft_adapter: checkpoints/smoke/sft/adapter
+
+rewards:
+  meaning:
+    method: nli
+    nli_model: hf-internal-testing/tiny-random-DebertaV2ForSequenceClassification
+    nli_revision: 035f03d5411169990d9ac33970a084ad98c0769a
+    entailment_label: LABEL_1
+    max_length: 256
+
+pairs:
+  data_dir: data/smoke/processed
+  output_dir: data/smoke/preferences
+  n_samples: 2
+  max_new_tokens: 16
+  batch_size: 2
+  min_margin: 0.0
+  require_clean_chosen: false
+
+tracking:
+  backend: none
+
+dpo:
+  output_dir: checkpoints/smoke/dpo
+  per_device_train_batch_size: 2
+  gradient_accumulation_steps: 1
+  max_steps: 2
+  max_length: 256
+  logging_steps: 1
+  save_strategy: "no"
+  eval_strategy: "no"
+  use_cpu: true
+  save_merged: false
