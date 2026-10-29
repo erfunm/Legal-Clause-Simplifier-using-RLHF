@@ -1,0 +1,15 @@
+{
+  "_note": "Hand-written judge responses for the tests (not recorded from the API). 'faithful' and 'drops_exception' are per-output gradings; tests attach them to whatever labels a task uses.",
+  "faithful": {
+    "meaning_preserved": {"score": 5, "rationale": "Same permission, notice period and exception.", "quotes": ["but not if the Licensor fixes the breach"]},
+    "no_added_facts": {"score": 5, "rationale": "Nothing beyond the clause.", "quotes": []},
+    "plain_language": {"score": 4, "rationale": "Short and plain; one long sentence.", "quotes": []},
+    "obligations_intact": {"score": 5, "rationale": "The exception and its time limit are kept.", "quotes": ["within 10 days"]}
+  },
+  "drops_exception": {
+    "meaning_preserved": {"score": 2, "rationale": "Termination now looks unconditional.", "quotes": ["unless the Licensor has cured the breach"]},
+    "no_added_facts": {"score": 5, "rationale": "Nothing added.", "quotes": []},
+    "plain_language": {"score": 5, "rationale": "Very plain.", "quotes": []},
+    "obligations_intact": {"score": 1, "rationale": "The cure exception and its 10-day limit are gone.", "quotes": ["within 10 days", "a quote that appears nowhere"]}
+  }
+}
