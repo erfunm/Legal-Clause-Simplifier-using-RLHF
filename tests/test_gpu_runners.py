@@ -321,6 +321,7 @@ def test_modal_rl_lists_the_ablations_from_local_yaml(
         "ablation-entity-off",
         "ablation-num-generations-2",
         "ablation-beta-0.04",
+        "ablation-meaning-coverage",
     }
     assert module.ablation_names(directory, "ablation-beta-0.04") == ["ablation-beta-0.04"]
     with pytest.raises(ValueError, match="unknown ablation"):
