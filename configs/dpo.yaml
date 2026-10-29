@@ -1,0 +1,64 @@
+# DPO from the SFT LoRA adapter, as a comparison with GRPO.
+#   1. lcs build-preferences --config configs/dpo.yaml   (sample N per clause, rank by reward)
+#   2. lcs train-dpo --config configs/dpo.yaml
+# Real run: one 24 GB GPU (NVIDIA L4) in bf16. Not run yet.
+#   modal run scripts/modal_rl.py --stage dpo   (both steps)
+experiment:
+  name: dpo-qwen3.5-0.8b
+  seed: 42
+
+data:
+  include_category: true
+
+model:
+  name_or_path: Qwen/Qwen3.5-0.8B
+  revision: 2fc06364715b967f1860aea9cf38778875588b17
+  dtype: bfloat16
+
+policy:
+  sft_adapter: checkpoints/sft/adapter
+
+rewards:                          # the same composite GRPO optimises, used to rank samples
+  weights: {meaning: 1.0, simplicity: 1.0, entity_preservation: 1.0, format: 1.0}
+  meaning:
+    method: nli
+    nli_model: cross-encoder/nli-deberta-v3-base
+    nli_revision: 6c749ce3425cd33b46d187e45b92bbf96ee12ec7
+  simplicity:
+    method: both
+
+pairs:
+  data_dir: data/processed
+  splits: [train, dev]
+  output_dir: data/preferences
+  n_samples: 8
+  temperature: 1.0
+  top_p: 0.95
+  max_new_tokens: 384
+  batch_size: 8                   # clauses per generate() call -> 64 sequences
+  min_margin: 0.1
+  require_clean_chosen: true      # never prefer an output a reward-hacking detector flags
+
+tracking:
+  backend: trackio
+  project: legal-clause-simplifier
+
+dpo:
+  output_dir: checkpoints/dpo
+  beta: 0.1
+  loss_type: [sigmoid]
+  max_length: 1024
+  learning_rate: 1.0e-5
+  per_device_train_batch_size: 4
+  gradient_accumulation_steps: 4
+  num_train_epochs: 1
+  warmup_steps: 0.05
+  lr_scheduler_type: cosine
+  bf16: true
+  gradient_checkpointing: true
+  logging_steps: 5
+  eval_strategy: steps
+  eval_steps: 50
+  save_strategy: steps
+  save_steps: 100
+  save_merged: true

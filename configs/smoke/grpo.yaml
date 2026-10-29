@@ -1,0 +1,43 @@
+# CPU smoke test of GRPO: tiny random Qwen3.5 policy (the smoke SFT adapter) and a tiny
+# random DeBERTa as the "NLI" model. Exercises the trainer, the four reward functions and
+# the saving code; the numbers it logs mean nothing and are never results.
+experiment:
+  name: smoke-grpo
+  seed: 0
+  smoke: true
+
+data:
+  train_path: data/smoke/processed/train.jsonl
+
+model:
+  name_or_path: trl-internal-testing/tiny-Qwen3_5ForConditionalGeneration-NoThink
+  revision: c21e64ab01a61fe5675253768d359262f6a19ab6
+  dtype: float32
+
+policy:
+  sft_adapter: checkpoints/smoke/sft/adapter
+
+rewards:
+  meaning:
+    method: nli
+    nli_model: hf-internal-testing/tiny-random-DebertaV2ForSequenceClassification
+    nli_revision: 035f03d5411169990d9ac33970a084ad98c0769a
+    entailment_label: LABEL_1      # the random model has no real entailment label
+    max_length: 256
+
+tracking:
+  backend: none
+
+grpo:
+  output_dir: checkpoints/smoke/grpo
+  num_generations: 2
+  max_completion_length: 16
+  per_device_train_batch_size: 2
+  gradient_accumulation_steps: 1
+  max_steps: 2
+  logging_steps: 1
+  save_strategy: "no"
+  mask_truncated_completions: false  # random outputs always hit the limit
+  log_completions: false
+  use_cpu: true
+  save_merged: true

@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, TypeVar
 
 import typer
+
+T = TypeVar("T")
 
 app = typer.Typer(
     help="Legal Clause Simplifier: data prep, post-training, evaluation and serving.",
@@ -252,13 +255,16 @@ def merge_adapter(
 ) -> None:
     """Merge a LoRA adapter into its base model (loaded in its training dtype, never 4 bit)."""
 
-    from legal_simplifier.config import SFTConfigFile
+    import json
+
+    from legal_simplifier.config import ModelConfig
     from legal_simplifier.training.model_card import write_model_cards
     from legal_simplifier.training.sft import ADAPTER_DIR, MERGED_DIR
     from legal_simplifier.training.sft import merge_adapter as merge
 
-    cfg = SFTConfigFile.model_validate_json((run_dir / "experiment.json").read_text())
-    out = merge(run_dir / ADAPTER_DIR, output_dir or run_dir / MERGED_DIR, cfg.model)
+    experiment = json.loads((run_dir / "experiment.json").read_text())  # any stage
+    model = ModelConfig.model_validate(experiment["model"])
+    out = merge(run_dir / ADAPTER_DIR, output_dir or run_dir / MERGED_DIR, model)
     write_model_cards(run_dir)
     typer.echo(f"Wrote merged weights to {out}")
 
@@ -275,18 +281,113 @@ def model_card(
         typer.echo(f"Wrote {path}")
 
 
-@app.command("train-grpo")
-def train_grpo() -> None:
-    """GRPO from the SFT checkpoint with split reward functions."""
+def _run_training(run: Callable[[], T]) -> T:
+    from legal_simplifier.training.tracking import TrackingPublishRefused
 
-    _not_yet("train-grpo", 3)
+    try:
+        return run()
+    except TrackingPublishRefused as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+
+
+@app.command("train-grpo")
+def train_grpo(
+    config: Annotated[Path, typer.Option("--config", help="GRPO YAML.")] = Path(
+        "configs/grpo.yaml"
+    ),
+    output_dir: Annotated[Path | None, typer.Option(help="Override grpo.output_dir.")] = None,
+) -> None:
+    """GRPO from the SFT adapter with four separately logged reward functions."""
+
+    from legal_simplifier.config import GRPOConfigFile, load_config
+    from legal_simplifier.training.grpo import train_grpo as run
+
+    cfg = load_config(config, GRPOConfigFile)
+    if output_dir is not None:
+        cfg.grpo.output_dir = output_dir
+    typer.echo(f"Saved GRPO run to {_run_training(lambda: run(cfg))}")
+
+
+@app.command("build-preferences")
+def build_preferences(
+    config: Annotated[Path, typer.Option("--config", help="DPO YAML.")] = Path("configs/dpo.yaml"),
+) -> None:
+    """Sample N outputs per clause from the SFT model and keep (best, worst) pairs by reward."""
+
+    from legal_simplifier.config import DPOConfigFile, load_config
+    from legal_simplifier.training.preferences import build_preferences as build
+
+    cfg = load_config(config, DPOConfigFile)
+    for split, stats in build(cfg).items():
+        typer.echo(
+            f"{split}: {stats.n_pairs} pairs from {stats.n_clauses} clauses "
+            f"(small margin {stats.skipped_small_margin}, identical {stats.skipped_identical}, "
+            f"no clean sample {stats.skipped_no_clean_sample})"
+        )
+    typer.echo(f"Wrote pairs to {cfg.pairs.output_dir}")
 
 
 @app.command("train-dpo")
-def train_dpo() -> None:
-    """DPO on preference pairs ranked by the composite reward."""
+def train_dpo(
+    config: Annotated[Path, typer.Option("--config", help="DPO YAML.")] = Path("configs/dpo.yaml"),
+    output_dir: Annotated[Path | None, typer.Option(help="Override dpo.output_dir.")] = None,
+) -> None:
+    """DPO from the SFT adapter on the pairs from `lcs build-preferences`."""
 
-    _not_yet("train-dpo", 3)
+    from legal_simplifier.config import DPOConfigFile, load_config
+    from legal_simplifier.training.dpo import train_dpo as run
+
+    cfg = load_config(config, DPOConfigFile)
+    if output_dir is not None:
+        cfg.dpo.output_dir = output_dir
+    try:
+        typer.echo(f"Saved DPO run to {_run_training(lambda: run(cfg))}")
+    except ValueError as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+
+
+@app.command("ablate")
+def ablate(
+    directory: Annotated[Path, typer.Option("--dir", help="Folder of ablation YAMLs.")] = Path(
+        "configs/ablations"
+    ),
+    only: Annotated[
+        list[str] | None, typer.Option(help="Run only these names (repeatable).")
+    ] = None,
+    dry_run: Annotated[bool, typer.Option(help="Print the resolved runs; train nothing.")] = False,
+) -> None:
+    """Run the GRPO ablations one after another on this machine (Modal runs them in parallel)."""
+
+    from legal_simplifier.training.ablations import describe, discover, run_ablations
+
+    ablations = discover(directory, only or ())
+    for ablation in ablations:
+        typer.echo(describe(ablation))
+        typer.echo(f"    -> {ablation.config.grpo.output_dir}")
+    if dry_run:
+        typer.echo(f"{len(ablations)} ablation runs resolved; nothing was trained.")
+        return
+    for path in _run_training(lambda: run_ablations(ablations)):
+        typer.echo(f"Saved {path}")
+
+
+@app.command("detect-hacking")
+def detect_hacking(
+    outputs: Annotated[Path, typer.Option(help="JSONL of saved outputs (clause + output(s)).")],
+    out_dir: Annotated[Path | None, typer.Option(help="Default: <outputs>_hacking/.")] = None,
+) -> None:
+    """Run the reward-hacking detectors over saved outputs; write summary.json and flagged.jsonl."""
+
+    from legal_simplifier.eval.hacking_report import scan_file
+
+    target = out_dir or outputs.with_name(f"{outputs.stem}_hacking")
+    summary = scan_file(outputs, target).to_dict()
+    typer.echo(f"{summary['n_outputs']} outputs, {summary['n_any_flagged']} flagged:")
+    for name, row in summary["detectors"].items():
+        typer.echo(f"  {name}: {row['count']} ({row['rate']:.1%})")
+    typer.echo(f"Wrote {target / 'summary.json'} and {target / 'flagged.jsonl'}")
 
 
 @app.command("evaluate")
