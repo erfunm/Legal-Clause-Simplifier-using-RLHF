@@ -3,6 +3,42 @@
 Short ADR-style records of the judgment calls made while building this project.
 Each entry says what was decided, why, and what would make us revisit it.
 
+## Index
+
+| ADR | Decision | In one line |
+|---|---|---|
+| [001](#adr-001-base-model-is-qwen35-08b-qwen3-17b-is-the-fallback) | Base model is Qwen3.5-0.8B; Qwen3-1.7B is the fallback | Qwen3.5-0.8B as the base (Apache-2.0, chat template, 248k vocab); Qwen3-1.7B as the fallback. |
+| [002](#adr-002-handling-logits-memory-with-the-248k-vocabulary-in-grpo) | Handling logits memory with the 248k vocabulary in GRPO | Keeping 248k-vocab logits out of memory: TRL's chunked LM head, beta 0, the order of knobs to turn. |
+| [003](#adr-003-sari-is-implemented-in-the-package-not-taken-from-easse) | SARI is implemented in the package, not taken from `easse` | SARI implemented in the package and cross-checked against HF evaluate, with the differences pinned down. |
+| [004](#adr-004-package-cli-configs-and-tooling) | Package, CLI, configs and tooling | uv, one Typer CLI, strict pydantic configs, ruff, pyright, pytest and CI. |
+| [005](#adr-005-entity-extraction-is-regex-first-spacy-is-optional) | Entity extraction is regex-first; spaCy is optional | Regex entity extraction with format normalisation; spaCy optional. |
+| [006](#adr-006-every-record-carries-reference_source-mock-data-can-never-be-published) | Every record carries `reference_source`; mock data can never be published | Every record carries reference_source; mock data and smoke runs can never be published. |
+| [007](#adr-007-near-duplicate-removal-and-contract-level-splits) | Near-duplicate removal and contract-level splits | Near-duplicate removal, then splits by contract, so boilerplate cannot leak across splits. |
+| [008](#adr-008-sft-uses-conversational-promptcompletion-data-with-completion-only-loss) | SFT uses conversational prompt/completion data with completion-only loss | SFT on conversational prompt/completion pairs with completion-only loss. |
+| [009](#adr-009-readability-bonus-gives-empty-output-nothing) | Readability bonus gives empty output nothing | Empty output earns no readability bonus. |
+| [010](#adr-010-how-clauses-are-extracted-from-cuad) | How clauses are extracted from CUAD | How CUAD answer spans become clauses: merging, multi-label spans, length filters, counts. |
+| [011](#adr-011-silver-references-via-the-message-batches-api) | Silver references via the Message Batches API | Silver references through the Message Batches API: cache, resume, cost log, --yes gate. |
+| [012](#adr-012-golden-set-and-review-tool) | Golden set and review tool | A 150-clause golden test set with an append-only human review log and a review page. |
+| [013](#adr-013-simple-law-is-not-used-no-license) | SIMPLE-LAW is not used (no license) | SIMPLE-LAW is not used: no license. |
+| [014](#adr-014-dataset-card-and-hub-upload) | Dataset card and Hub upload | The dataset card is generated from stats; the Hub upload is private by default and gated. |
+| [015](#adr-015-reference-pilot-and-dry-run-cost-estimates) | Reference pilot and dry-run cost estimates | A ~20-clause paid pilot (--limit) and a dry-run cost range; a price-table fix. |
+| [016](#adr-016-lora-on-every-projection-of-both-qwen35-layer-types-text-only-base) | LoRA on every projection of both Qwen3.5 layer types; text-only base | LoRA on every projection of both Qwen3.5 layer types; the text-only base. |
+| [017](#adr-017-sft-run-outputs-qlora-tracking-and-gpu-entry-points) | SFT run outputs, QLoRA, tracking and GPU entry points | SFT outputs (adapter, merged, cards), QLoRA, Trackio/W&B, the Modal and notebook runners. |
+| [018](#adr-018-four-reward-functions-logged-separately-shared-by-grpo-dpo-and-evaluation) | Four reward functions, logged separately, shared by GRPO, DPO and evaluation | Four separately logged rewards shared by GRPO, DPO and evaluation; the NLI-direction gap and its fixes. |
+| [019](#adr-019-grpo-and-dpo-continue-the-sft-adapter-the-reference-is-a-frozen-copy-of-it) | GRPO and DPO continue the SFT adapter; the reference is a frozen copy of it | GRPO and DPO continue the SFT adapter; its frozen copy is the KL reference. |
+| [020](#adr-020-reward-hacking-detectors) | Reward-hacking detectors | The reward-hacking detectors, their penalties and their known misses. |
+| [021](#adr-021-dpo-pairs-from-sft-samples-ranked-by-the-composite-reward) | DPO pairs from SFT samples ranked by the composite reward | DPO pairs: N samples per clause from SFT, ranked by the composite reward, clean winners only. |
+| [022](#adr-022-ablations-as-override-files-with-one-launcher) | Ablations as override files with one launcher | Ablations as override files with one launcher, on an equal budget. |
+| [023](#adr-023-evaluation-harness-systems-cache-and-run-format) | Evaluation harness: systems, cache and run format | The eval harness: system classes, the fingerprinted generation cache, the run format. |
+| [024](#adr-024-metrics-and-statistics) | Metrics and statistics | Metrics from the reward code; bootstrap CIs, paired permutation tests, seed summaries. |
+| [025](#adr-025-llm-judge-blinding-and-self-preference) | LLM judge, blinding and self-preference | The blind LLM judge and the self-preference risk; an open-weight cross-check. |
+| [026](#adr-026-judge-validation-by-human-labels) | Judge validation by human labels | Judge validation by human labels and the acceptance bar (QWK and Spearman >= 0.6, CI lower bound >= 0.4). |
+| [027](#adr-027-error-analysis-report-and-the-ci-eval-gate) | Error analysis, report and the CI eval gate | The failure taxonomy, the report generator and the CI eval gate. |
+| [028](#adr-028-serving-fastapi-service-and-engines) | Serving: FastAPI service and engines | The FastAPI service, transformers/vLLM engines, and the inference extras split from training. |
+| [029](#adr-029-docker-images-and-the-space) | Docker images and the Space | The CPU and GPU Docker images, compose, and the Space files. |
+| [030](#adr-030-benchmark-and-serving-cost) | Benchmark and serving cost | The benchmark: latency, throughput, GPU-only cost per 1k clauses vs Claude. |
+| [031](#adr-031-grpo-replaces-ppo) | GRPO replaces PPO | GRPO replaces PPO: no value model, verifiable rewards, no PPO in TRL 1.x. |
+
 ---
 
 ## ADR-001: Base model is Qwen3.5-0.8B; Qwen3-1.7B is the fallback
@@ -586,3 +622,17 @@ These are surface heuristics. A fluent paraphrase that changes the meaning gets 
 - **Cost per 1,000 clauses** = GPU $/h × seconds per clause × 1000 / 3600, from the throughput pass, on the stated GPU. The default config uses Modal's L4 price: $0.000222/s, so $0.7992/h, from modal.com/pricing, checked 2026-10-29. That is the GPU alone; Modal bills CPU and memory separately, and idle time is not counted, so the figure is a **lower bound** and is labelled as one. With no price set, the cost is reported as unknown, never guessed.
 - **Claude comparison.** The eval run's `claude` system's real spend, matched to its requests by key in the cost log at Batch prices. Without that, a Batch-price *estimate* is reported and labelled: input tokens are counted locally from the exact requests, and the output length is borrowed from the served model.
 - **Report.** Results go to `results/benchmarks/<name>.json`. `lcs report` takes local systems' cost from non-smoke benchmark files (matched by `model_label` = eval system name, newest file wins), so the quality-vs-cost chart fills in. Smoke results (CPU, tiny model) never count.
+
+---
+
+## ADR-031: GRPO replaces PPO
+
+**Date:** 2026-10-29 · **Status:** accepted (recorded in Phase 6; the choice was made in Phase 3)
+
+The original scaffold used PPO (`configs/ppo.yaml`, removed in Phase 3). GRPO replaces it:
+
+- **No value model.** Each output's advantage is its reward relative to the other outputs sampled for the same clause. PPO needs a second network of similar size to estimate value, which costs memory that a 248k-token vocabulary on one 24 GB GPU does not leave (ADR-002).
+- **The rewards are verifiable and cheap.** Entity recall, the detectors and the reading grade are deterministic, and NLI is one small classifier, so scoring several samples per clause is affordable. Group-relative advantages suit them.
+- **TRL 1.x has no PPO at all.** TRL 1.16 has no `PPOTrainer`, not even under `trl.experimental` (checked in the installed package). GRPO, DPO and SFT share one supported code path, including the fused, chunked LM head.
+
+DPO stays as the offline comparison (ADR-021), on pairs ranked by the same composite reward.
