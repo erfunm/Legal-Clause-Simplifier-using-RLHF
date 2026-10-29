@@ -6,12 +6,14 @@ Post-training a small open model (Qwen3.5-0.8B) to rewrite legal contract clause
 > - the engineering foundation: package, configs, reward components, SFT, tests and CI;
 > - the data pipeline: CUAD clause extraction, contract-level splits, silver references through the Claude Batches API, a golden test set and the tool for reviewing it;
 > - the SFT baseline: LoRA/QLoRA with PEFT, Trackio or W&B logging, adapter and merged weights, model cards, and a Colab/Kaggle notebook and Modal script for the GPU run;
-> - RL post-training: GRPO from the SFT adapter with four separately logged rewards, DPO on reward-ranked pairs, reward-hacking detectors, and four ablations with one launcher.
+> - RL post-training: GRPO from the SFT adapter with four separately logged rewards, DPO on reward-ranked pairs, reward-hacking detectors, and four ablations with one launcher;
+> - the evaluation harness: 8 systems on the golden set, automatic metrics with bootstrap CIs and paired tests, a blind Claude judge with human validation and an open-weight cross-check, error analysis, the report generator, and a CI eval gate.
 >
-> The real reference run, the golden-set review and the GPU training runs have not happened yet. RL training, evaluation and serving are being added phase by phase. See [`docs/decisions.md`](docs/decisions.md) for the design decisions and [`docs/RUNBOOK.md`](docs/RUNBOOK.md) for the steps that need keys, a GPU or a person.
+> The real reference run, the golden-set review, the GPU training runs and the evaluation have not happened yet. RL training, evaluation and serving are being added phase by phase. See [`docs/decisions.md`](docs/decisions.md) for the design decisions and [`docs/RUNBOOK.md`](docs/RUNBOOK.md) for the steps that need keys, a GPU or a person.
 
 ## Results: pending first full run
 
+<!-- results:start -->
 No model has been trained on real data yet, so this README has no metrics. When the full pipeline runs, `lcs report` will generate this section from `results/`. It will compare base, SFT, SFT+DPO, SFT+GRPO, a frontier API and copy/truncate baselines on:
 
 - SARI
@@ -22,6 +24,7 @@ No model has been trained on real data yet, so this README has no metrics. When 
 - a human-validated LLM judge
 
 `lcs report` refuses to run on mock references or smoke-test runs, so nothing in this section can come from placeholder data.
+<!-- results:end -->
 
 ## Post-training: GRPO, with DPO as a comparison
 
@@ -78,8 +81,13 @@ make smoke             # fixture -> mock refs -> golden set -> SFT -> GRPO -> DP
 | `lcs build-preferences` / `lcs train-dpo` | Sample N outputs per clause, rank them by reward into pairs; DPO on the pairs |
 | `lcs ablate [--dry-run]` | Resolve and run the GRPO ablations in `configs/ablations/` |
 | `lcs detect-hacking --outputs FILE` | Run the reward-hacking detectors over saved outputs |
-| `lcs report` | Build results tables (refuses mock or smoke data) |
-| `lcs evaluate`, `lcs serve` | Coming in later phases |
+| `lcs report` | README results table, CIs and figures in `docs/figures/` (refuses mock or smoke data) |
+| `lcs evaluate [--skip-paid] [--dry-run] [--yes]` | Run every system on the golden set (and dev); cached generations; metrics with CIs into `results/<run>/` |
+| `lcs judge --run DIR [--limit N] [--dry-run] [--yes]` | Blind LLM judge (`claude-opus-5-5`, or `--backend hf` for the open-weight cross-check) |
+| `lcs label-judge` / `lcs judge-agreement` | Label outputs on the judge's rubric; Spearman and quadratic-weighted kappa with bootstrap CIs |
+| `lcs error-analysis --run DIR` | Failure taxonomy (detectors, metrics, low judge scores) with counts and examples |
+| `lcs eval-gate` | CI gate: re-score frozen mock outputs, fail on regressions |
+| `lcs serve` | Coming in Phase 5 |
 
 ## Project structure
 
@@ -92,7 +100,7 @@ src/legal_simplifier/
 ├── llm/              # Claude Message Batches runner (cache, resume, cost log)
 ├── rewards/          # meaning (NLI/BERTScore), SARI, FKGL band, entities, format; reward-hacking detectors
 ├── training/         # SFT (LoRA/QLoRA), GRPO, DPO pairs + training, ablations, tracking, model cards
-├── eval/             # publishing guards, reward-hacking scan, reporting
+├── eval/             # systems, metrics, stats, judge, labels + agreement, error analysis, report, gate, guards
 ├── serving/          # inference service (to follow)
 └── aws.py            # optional S3 helpers (`aws` extra)
 configs/              # real-run configs; configs/smoke/ for tiny CPU runs

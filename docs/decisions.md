@@ -422,3 +422,107 @@ These are surface heuristics. A fluent paraphrase that changes the meaning gets 
   - `lcs ablate [--only NAME] [--dry-run]` resolves and prints each run's difference from the base, and trains them one after another on one GPU.
   - `modal run scripts/modal_rl.py --stage ablations` runs them in parallel, one L4 each.
 - **Status:** none has been run. Single-seed runs at this budget show direction, not significance, and the report will say so.
+
+---
+
+## ADR-023: Evaluation harness: systems, cache and run format
+
+**Date:** 2026-10-29 · **Status:** accepted
+
+- **Systems** are small classes in `eval/systems.py`: `copy`, `truncate` (first 50% of the words), `hf` (base model, with an optional LoRA adapter and optional few-shot examples), and `claude`. Adding a system means one entry in `configs/eval.yaml`; adding a *kind* means one class.
+  - The few-shot examples come from the train split (contract-disjoint from the golden set, which is drawn from test), one per category where possible, with a fixed seed.
+  - Local models decode greedily, so outputs are reproducible.
+  - `claude` uses the student's own prompt (`prompts.py`), not the reference style guide, so it is a true zero-shot comparison.
+- **Cache.** Generations are cached under `results/cache/generations/<system>/<fingerprint>.jsonl`. The fingerprint hashes everything that changes an output: model id and revision, the SHA-256 of the adapter weights, the prompt, the few-shot examples and the decoding settings. Re-scoring, re-judging and re-reporting never regenerate; a retrained adapter does. Failed generations (for example a Claude error) are scored as empty for that run but not cached, so the next run retries them.
+- **Run format** (`results/<run>/`):
+  - `manifest.json`: with `smoke`, the golden-set review status, the git commit, every system's fingerprint and the generation counts.
+  - `examples.jsonl`: one row per output, carrying `reference_source`.
+  - `metrics.json`.
+
+  This is exactly what `eval/guards.py` checks, so mock references and smoke runs cannot be reported.
+- **Datasets:** the golden set (rejected items excluded; unreviewed items included and labelled as such) and, optionally, a category-balanced sample of dev. `--limit N` keeps N items per dataset as a pilot.
+
+---
+
+## ADR-024: Metrics and statistics
+
+**Date:** 2026-10-29 · **Status:** accepted
+
+- **Metrics reuse the reward code** (`eval/metrics.py`):
+  - SARI, BERTScore F1, FKGL, normalised entity recall;
+  - NLI faithfulness, P(entail | clause → output), and `nli_coverage` (each clause part ← output); both are `RewardSuite.meaning` and share one NLI model;
+  - compression ratio (output words / clause words);
+  - the hallucination rate (faithfulness < 0.5);
+  - a 0/1 for every reward-hacking detector, `condition_drop` included.
+  The judge's four criteria are added when the run has been judged.
+- **Uncertainty** (`eval/stats.py`, all seeded):
+  - Every mean has a 95% percentile bootstrap CI over items.
+  - Each `trained: true` system is compared with `reference_system` (SFT) on the same items. The CI comes from a bootstrap of the per-item difference, and the p-value from a two-sided sign-flip permutation test of its mean. Pairing removes the between-clause variance, which dominates here.
+  - Systems that share a `group` (training seeds) also get mean ± std across seeds.
+  - The report marks ▲/▼ only at p < 0.05 and makes no multiple-comparison correction. With 7–9 systems and about 15 metrics, some marks will be chance, so the table says how they were computed.
+- **Report.**
+  - FKGL has a target band (5–9), not "lower is better", so it is never bolded; neither is compression.
+  - No cell is bolded when every system ties.
+  - BERTScore loads its model by name through `bert-score`, which takes no revision, so it is the one metric model not pinned to a commit.
+
+---
+
+## ADR-025: LLM judge, blinding and self-preference
+
+**Date:** 2026-10-29 · **Status:** accepted; validated by the human labels before any judge number is reported
+
+- **Rubric** (1–5 each, with a rationale and verbatim quotes, as structured JSON): `meaning_preserved`, `no_added_facts`, `plain_language`, `obligations_intact` (obligations, conditions and exceptions).
+  - Scores use `enum: [1..5]`, because structured outputs do not support `minimum`/`maximum` or `maxItems`; counts and labels are validated in code.
+  - Quotes are checked against the output and the clause, and the verified share is stored.
+- **Blind.**
+  - All distinct outputs for a clause are shown together under letters, shuffled with a seed per item.
+  - No system names appear, and nothing is called a "reference" or a "baseline".
+  - The rubric says not to reward length.
+  - Identical outputs from several systems are judged once.
+  - Empty outputs are scored 1 by rule and never sent.
+
+  A grouped request costs less than one per output and lets the judge use the same scale across a clause, but adding a system re-judges every clause; the cache makes that the only extra cost.
+- **Gating:** the same as references. `--dry-run` sends nothing and prints a cost range (local or count-tokens estimate). Without `--yes` the command refuses. `--limit N` runs a category-balanced pilot. `BatchRunner` provides the caching, resume and cost log.
+- **Self-preference.** Claude writes the silver references (Sonnet 5.5), is one of the systems (Sonnet 5.5) and is the judge (Opus 5.5). A judge from the same family tends to prefer text like its own, and reference metrics (SARI, BERTScore) reward imitating the reference writer. So the `claude` row is expected to look better than it is, on the judge *and* on reference metrics. Three mitigations:
+  1. Blinding.
+  2. The human labels (ADR-026). They are the ground truth for whether the judge can be trusted at all.
+  3. An open-weight cross-check judge, `ibm-granite/granite-3.3-8b-instruct` (Apache-2.0, about 16 GB in bf16, one L4), from a different family than both Claude and the Qwen policy, with the same rubric. `lcs judge-agreement` reports Claude-vs-Granite agreement next to human-vs-Claude. A gap that favours Claude's own outputs is the signature of self-preference.
+- **The `proxy` backend** is a deterministic stand-in (detectors, entity recall, the FKGL band) for smoke runs and the CI gate. The report never shows proxy scores as a judge.
+
+---
+
+## ADR-026: Judge validation by human labels
+
+**Date:** 2026-10-29 · **Status:** accepted
+
+- **Labelling.** `lcs label-judge --run <run> --reviewer NAME` samples 80 outputs (configurable; 50–100 recommended), round-robin across systems, and shows them in the review tool's layout (entity chips, reading grade) with the same rubric. The system is never displayed. The queue is written once. Labels are append-only, with reviewer and timestamp; the latest label per reviewer counts.
+- **Agreement.** `lcs judge-agreement` reports, per criterion, Spearman's ρ and quadratic-weighted Cohen's κ, each with a bootstrap CI.
+  - The bootstrap resamples *outputs*, so two reviewers do not double n.
+  - Fewer than 30 labelled outputs is flagged "not reliable".
+  - Both statistics are cross-checked in the tests against scikit-learn and SciPy reference values.
+- **No acceptance bar has been chosen yet.** One will be set before the first real labels (a κ around 0.6 is a common "substantial agreement" line), and judge columns stay out of the README until agreement is reported.
+
+---
+
+## ADR-027: Error analysis, report and the CI eval gate
+
+**Date:** 2026-10-29 · **Status:** accepted
+
+- **`lcs error-analysis`** assigns each output every failure type it hits:
+  - empty output;
+  - one per detector;
+  - entities dropped;
+  - unfaithful, or incomplete under NLI;
+  - still complex (FKGL > 12);
+  - each judge criterion ≤ 2.
+
+  It reports counts and rates per system and samples three examples per type with a fixed seed. Those samples are where the README's before/after examples will come from.
+- **`lcs report`** first runs `assert_publishable_run` on every run under `results/`. It then rewrites only the README section between `<!-- results:start -->` and `<!-- results:end -->`, and writes `docs/figures/`:
+  - per-metric bars;
+  - quality vs cost: Claude's cost per 1,000 clauses is matched to its requests by key in the cost log; local systems show "cost pending" until Phase 5;
+  - GRPO reward curves from `log_history.json` or a Trackio/W&B CSV export.
+- **Eval gate** (`lcs eval-gate`, its own CI job, no models). It re-scores a frozen fixture of 20 *mock* clauses with hand-written outputs (labelled MOCK in every row and in the fixture README) and fails if entity recall, the `condition_drop` or `modality_flip` rate, or a judge-proxy mean leaves `thresholds.json`.
+  - The thresholds are the fixture's own baseline minus a tolerance.
+  - A rule-degraded copy of the fixture fails the gate, and a test proves it.
+  - What the gate guards is the scoring code (a change that stops a detector firing trips it), not model quality.
+  - Building it found two `modality_flip` false positives on faithful rewrites ("it will not renew"; "no termination shall take effect before…"). They are kept in the fixture and its baseline as known misses, to recalibrate on real outputs.
