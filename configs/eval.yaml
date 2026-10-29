@@ -1,0 +1,67 @@
+# Evaluation: every system on the golden set (and dev), automatic metrics, blind LLM judge.
+#   lcs evaluate --config configs/eval.yaml --skip-paid      (GPU: local systems; free)
+#   lcs evaluate --config configs/eval.yaml --dry-run        (Claude system: count + cost range)
+#   lcs evaluate --config configs/eval.yaml --yes            (adds the Claude system: PAID)
+#   lcs judge --run results/eval-v1 --dry-run | --limit 20 --yes | --yes   (PAID)
+#   lcs label-judge / judge-agreement / error-analysis / report
+# Not run yet. See docs/RUNBOOK.md §4.
+experiment:
+  name: eval-v1
+  seed: 0
+
+output_root: results
+cache_dir: results/cache/generations   # generations by system fingerprint: re-scoring never re-generates
+
+model:                                  # the base every hf system starts from
+  name_or_path: Qwen/Qwen3.5-0.8B
+  revision: 2fc06364715b967f1860aea9cf38778875588b17
+  dtype: bfloat16
+
+data:
+  golden_dir: data/golden
+  include_unreviewed: true              # the manifest and report state the review status
+  dev_path: data/processed/dev.jsonl
+  dev_max_items: 150
+  few_shot_path: data/processed/train.jsonl
+  few_shot_seed: 7
+
+systems:
+  - {name: copy, kind: copy}
+  - {name: truncate, kind: truncate, truncate_ratio: 0.5}
+  - {name: base-zero-shot, kind: hf}
+  - {name: base-few-shot, kind: hf, few_shot: 3}
+  - {name: sft, kind: hf, adapter: checkpoints/sft/adapter}
+  - {name: sft-dpo, kind: hf, adapter: checkpoints/dpo/adapter, trained: true}
+  - {name: sft-grpo, kind: hf, adapter: checkpoints/grpo/adapter, trained: true}
+  - {name: claude, kind: claude}        # upper reference, zero-shot, same prompt; PAID
+  # More seeds of one system: same group, different adapter, e.g.
+  # - {name: sft-grpo-s2, kind: hf, adapter: checkpoints/grpo-seed2/adapter, group: sft-grpo, seed: 2, trained: true}
+reference_system: sft                    # trained systems get a paired test against it
+
+generation:
+  max_new_tokens: 384
+  batch_size: 16
+
+metrics:
+  meaning:                              # NLI for faithfulness (clause -> output) and coverage
+    nli_model: cross-encoder/nli-deberta-v3-base
+    nli_revision: 6c749ce3425cd33b46d187e45b92bbf96ee12ec7
+  bertscore_model: roberta-large
+  faithfulness_threshold: 0.5
+  n_bootstrap: 1000
+  confidence: 0.95
+
+claude:
+  model: claude-sonnet-5-5
+  effort: medium
+  max_tokens: 4096
+
+judge:
+  backend: claude                       # claude | hf (open-weight cross-check) | proxy (smoke/CI only)
+  model: claude-opus-5-5
+  effort: medium
+  max_tokens: 8192
+  hf_model: ibm-granite/granite-3.3-8b-instruct
+  hf_revision: 51dd4bc2ade4059a6bd87649d68aa11e4fb2529b
+  seed: 11
+  low_score: 2

@@ -152,6 +152,51 @@ Read `flagged.jsonl` for before/after examples. If a hack is common, raise its p
 
 **PUBLISHING:** nothing pushes models or completions to the Hub (`log_completions_hub_repo` is always unset). Ask before adding that.
 
+## 4. Evaluation, the judge and the report (Phase 4)
+
+**Needs:** the adapters from §2–3, the golden set from §1, one GPU for the local systems, and an Anthropic key for the Claude system and the judge. Nothing has been run yet.
+
+```bash
+# 4a. The free systems on one GPU (base zero-/few-shot, SFT, SFT+DPO, SFT+GRPO, copy, truncate).
+modal volume put legal-simplifier data/golden data/golden
+modal run scripts/modal_eval.py                      # or --judge-hf to add the open-weight judge
+modal volume get legal-simplifier results/eval-v1 results/eval-v1
+modal volume get legal-simplifier results/cache results/cache     # cached generations
+#     (Colab/Kaggle: notebooks/eval_colab_kaggle.ipynb. Any CUDA machine:
+#      uv run lcs evaluate --config configs/eval.yaml --skip-paid)
+
+# 4b. Add the Claude system (PAID). Dry run first; the cached local outputs are reused.
+uv run lcs evaluate --config configs/eval.yaml --dry-run --count-tokens api
+uv run lcs evaluate --config configs/eval.yaml --yes
+
+# 4c. The blind LLM judge, claude-opus-5-5 (PAID). Pilot, read it, then the rest (the pilot is cached).
+uv run lcs judge --config configs/eval.yaml --run results/eval-v1 --dry-run
+uv run lcs judge --config configs/eval.yaml --run results/eval-v1 --limit 20 --yes
+less results/eval-v1/judgements_claude.jsonl      # rationales, quotes, quotes_verified
+uv run lcs judge --config configs/eval.yaml --run results/eval-v1 --yes
+```
+
+**Human step: validate the judge.** This opens a local page on http://127.0.0.1:7861. Score 50–100 outputs on the same rubric without seeing which system wrote them:
+
+```bash
+uv run lcs label-judge --run results/eval-v1 --reviewer "Your Name" --n 80
+uv run lcs judge-agreement --run results/eval-v1      # Spearman and QWK per criterion, bootstrap CIs
+```
+
+Decide the acceptance bar before you look (ADR-026). If the judge also ran with `--backend hf` (4a, `--judge-hf`), the output includes Claude-vs-Granite agreement: a gap that favours the Claude system is self-preference (ADR-025).
+
+```bash
+# 4d. Error analysis, then the report (refuses mock references and smoke runs).
+uv run lcs error-analysis --config configs/eval.yaml --run results/eval-v1
+uv run lcs report --results-dir results --training-log checkpoints/grpo/log_history.json
+#     -> README "Results" section, docs/figures/*.png, results/report.md
+#     Several GRPO seeds: add them as systems with the same `group` in configs/eval.yaml.
+```
+
+Copy two or three before/after examples per failure type from `results/eval-v1/error_analysis.md` into the README's reward-hacking section. They are the only examples it should show.
+
+**CI eval gate:** `make eval-gate` re-scores the frozen mock fixture in `tests/fixtures/eval_gate/`. If you change a detector or the entity matching on purpose, rebuild the fixture (`uv run python tests/fixtures/build_eval_gate.py`) and review the new `thresholds.json` in the PR.
+
 ## Later phases
 
 GRPO/DPO training, evaluation (including the human judge-validation labels), serving and Hub publishing will be added here as they are built. Publishing steps always need explicit confirmation.

@@ -1987,6 +1987,7 @@ aws = [
 ]
 eval = [
     { name = "bert-score" },
+    { name = "matplotlib" },
 ]
 nlp = [
     { name = "spacy" },
@@ -2032,6 +2033,7 @@ requires-dist = [
     { name = "datasets", marker = "extra == 'train'", specifier = ">=5.0" },
     { name = "gradio", marker = "extra == 'review'", specifier = ">=6.0" },
     { name = "huggingface-hub", specifier = ">=1.0" },
+    { name = "matplotlib", marker = "extra == 'eval'", specifier = ">=3.10" },
     { name = "numpy", specifier = ">=2.0" },
     { name = "peft", marker = "extra == 'train'", specifier = ">=0.21" },
     { name = "pydantic", specifier = ">=2.9" },

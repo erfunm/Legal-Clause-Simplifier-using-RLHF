@@ -40,13 +40,19 @@ class BertScoreScorer:
     """BERTScore-F1 with a model that is loaded once and scored in batches."""
 
     def __init__(
-        self, model_type: str, *, rescale_with_baseline: bool = True, batch_size: int = 32
+        self,
+        model_type: str,
+        *,
+        rescale_with_baseline: bool = True,
+        batch_size: int = 32,
+        num_layers: int | None = None,
     ):
         from bert_score import BERTScorer
 
         self.batch_size = batch_size
         self._scorer = BERTScorer(
             model_type=model_type,
+            num_layers=num_layers,  # None: bert-score's tuned layer for known models
             lang="en",
             rescale_with_baseline=rescale_with_baseline,
             batch_size=batch_size,

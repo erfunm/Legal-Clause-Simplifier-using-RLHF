@@ -1,0 +1,47 @@
+# CPU smoke test of the eval harness: the smoke SFT/DPO/GRPO adapters on the tiny random
+# Qwen3.5, a tiny random DeBERTa as "NLI" and a tiny random RoBERTa for BERTScore. No paid
+# system. Every number it writes is meaningless, and `lcs report` refuses it (smoke: true).
+experiment:
+  name: smoke-eval
+  seed: 0
+  smoke: true
+
+output_root: results/smoke
+cache_dir: results/smoke/cache/generations
+
+model:
+  name_or_path: trl-internal-testing/tiny-Qwen3_5ForConditionalGeneration-NoThink
+  revision: c21e64ab01a61fe5675253768d359262f6a19ab6
+  dtype: float32
+
+data:
+  golden_dir: data/smoke/golden
+  dev_path: data/smoke/processed/dev.jsonl
+  few_shot_path: data/smoke/processed/train.jsonl
+
+systems:
+  - {name: copy, kind: copy}
+  - {name: truncate, kind: truncate}
+  - {name: base-zero-shot, kind: hf}
+  - {name: base-few-shot, kind: hf, few_shot: 2}
+  - {name: sft, kind: hf, adapter: checkpoints/smoke/sft/adapter}
+  - {name: sft-dpo, kind: hf, adapter: checkpoints/smoke/dpo/adapter, trained: true}
+  - {name: sft-grpo, kind: hf, adapter: checkpoints/smoke/grpo/adapter, trained: true}
+
+generation:
+  max_new_tokens: 16
+  batch_size: 4
+
+metrics:
+  meaning:
+    nli_model: hf-internal-testing/tiny-random-DebertaV2ForSequenceClassification
+    nli_revision: 035f03d5411169990d9ac33970a084ad98c0769a
+    entailment_label: LABEL_1
+    max_length: 256
+  bertscore_model: hf-internal-testing/tiny-random-RobertaModel
+  bertscore_num_layers: 2
+  bertscore_rescale_with_baseline: false
+  n_bootstrap: 200
+
+judge:
+  backend: proxy

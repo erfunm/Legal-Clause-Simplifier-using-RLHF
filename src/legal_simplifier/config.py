@@ -362,6 +362,118 @@ class DPOConfigFile(StrictModel):
     dpo: DPOTrainingConfig = Field(default_factory=DPOTrainingConfig)
 
 
+class SystemSpec(StrictModel):
+    """One system under evaluation. Add a system by adding an entry (and, for a new kind,
+    a class in :mod:`legal_simplifier.eval.systems`)."""
+
+    name: str = Field(pattern=r"^[A-Za-z0-9_.+-]+$")
+    kind: Literal["copy", "truncate", "hf", "claude"]
+    group: str | None = None
+    """Systems that differ only by training seed share a group (mean ± std over seeds)."""
+    seed: int | None = None
+    adapter: Path | None = None
+    """``hf``: a LoRA adapter directory on the base model; ``None`` evaluates the base model."""
+    few_shot: int = 0
+    """``hf``: number of worked examples (from ``data.few_shot_path``) before the clause."""
+    truncate_ratio: float = 0.5
+    """``truncate``: keep this share of the clause's words."""
+    trained: bool = False
+    """Compared against ``reference_system`` with a paired test."""
+
+
+class EvalDataConfig(StrictModel):
+    golden_dir: Path = Path("data/golden")
+    include_unreviewed: bool = True
+    """Unreviewed golden items still have silver references; the manifest records the status."""
+    dev_path: Path | None = None
+    """Also evaluate on this split (e.g. data/processed/dev.jsonl); ``None`` = golden only."""
+    dev_max_items: int | None = None
+    few_shot_path: Path = Path("data/processed/train.jsonl")
+    few_shot_seed: int = 7
+
+
+class EvalGenerationConfig(StrictModel):
+    """Greedy decoding for every local model, so outputs are reproducible and cacheable."""
+
+    max_new_tokens: int = 384
+    batch_size: int = 8
+
+
+class EvalMetricsConfig(StrictModel):
+    meaning: MeaningConfig = Field(default_factory=MeaningConfig)
+    """NLI model for faithfulness (clause -> output) and coverage (each part <- output)."""
+    bertscore_model: str | None = "roberta-large"
+    """``None`` skips BERTScore."""
+    bertscore_num_layers: int | None = None
+    bertscore_rescale_with_baseline: bool = True
+    bertscore_batch_size: int = 32
+    faithfulness_threshold: float = 0.5
+    """An output below this P(entailment) counts towards the hallucination rate."""
+    n_bootstrap: int = 1000
+    confidence: float = 0.95
+
+
+class ClaudeSystemConfig(StrictModel):
+    """The ``claude`` system: zero-shot through the Batches API, same prompt as the student."""
+
+    model: str = "claude-sonnet-5-5"
+    effort: str = Field(default="medium", pattern="^(low|medium|high|xhigh|max)$")
+    max_tokens: int = 4096
+    cache_dir: Path = Path("data/cache/anthropic")
+    cost_log: Path = Path("data/cache/anthropic/cost_log.jsonl")
+    poll_interval_s: float = 60.0
+
+
+class JudgeConfig(StrictModel):
+    """LLM judge. ``claude`` is the primary judge; ``hf`` is the open-weight cross-check;
+    ``proxy`` is a deterministic stand-in for smoke runs and the CI gate (never a result)."""
+
+    backend: Literal["claude", "hf", "proxy"] = "claude"
+    model: str = "claude-opus-5-5"
+    effort: str = Field(default="medium", pattern="^(low|medium|high|xhigh|max)$")
+    max_tokens: int = 8192
+    cache_dir: Path = Path("data/cache/anthropic")
+    cost_log: Path = Path("data/cache/anthropic/cost_log.jsonl")
+    poll_interval_s: float = 60.0
+    hf_model: str = "ibm-granite/granite-3.3-8b-instruct"
+    hf_revision: str | None = "51dd4bc2ade4059a6bd87649d68aa11e4fb2529b"
+    hf_dtype: str = "bfloat16"
+    hf_max_new_tokens: int = 1536
+    hf_cache_dir: Path = Path("results/cache/judge_hf")
+    seed: int = 11
+    """Seeds the blind shuffle of outputs within each clause."""
+    pilot_seed: int = 21
+    low_score: int = 2
+    """A criterion at or below this counts as a failure in the error analysis."""
+
+
+class EvalConfigFile(StrictModel):
+    """Contents of ``configs/eval.yaml``."""
+
+    stage: Literal["eval"] = "eval"
+    experiment: ExperimentConfig
+    output_root: Path = Path("results")
+    cache_dir: Path = Path("results/cache/generations")
+    model: ModelConfig = Field(default_factory=ModelConfig)
+    data: EvalDataConfig = Field(default_factory=EvalDataConfig)
+    systems: list[SystemSpec]
+    reference_system: str = "sft"
+    """Trained systems are tested against this one (paired bootstrap / permutation)."""
+    generation: EvalGenerationConfig = Field(default_factory=EvalGenerationConfig)
+    metrics: EvalMetricsConfig = Field(default_factory=EvalMetricsConfig)
+    claude: ClaudeSystemConfig = Field(default_factory=ClaudeSystemConfig)
+    judge: JudgeConfig = Field(default_factory=JudgeConfig)
+
+    @model_validator(mode="after")
+    def _check_systems(self) -> EvalConfigFile:
+        names = [s.name for s in self.systems]
+        if len(set(names)) != len(names):
+            raise ValueError(f"duplicate system names: {names}")
+        if any(s.trained for s in self.systems) and self.reference_system not in names:
+            raise ValueError(f"reference_system {self.reference_system!r} is not a system")
+        return self
+
+
 class ExtractionConfig(StrictModel):
     cuad_json: Path | None = None
     """Local ``CUAD_v1.json``; ``None`` downloads the pinned file from the Hub."""

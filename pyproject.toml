@@ -34,6 +34,7 @@ qlora = [
 ]
 eval = [
     "bert-score>=0.3.13",
+    "matplotlib>=3.10",  # lcs report figures
 ]
 nlp = [
     "spacy>=3.8",

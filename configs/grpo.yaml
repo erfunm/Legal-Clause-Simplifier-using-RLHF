@@ -24,7 +24,7 @@ policy:
 rewards:
   weights: {meaning: 1.0, simplicity: 1.0, entity_preservation: 1.0, format: 1.0}
   meaning:
-    method: nli                           # nli (no reference needed) | bertscore
+    method: nli                           # nli (no reference needed) | nli_coverage | bertscore
     nli_model: cross-encoder/nli-deberta-v3-base
     nli_revision: 6c749ce3425cd33b46d187e45b92bbf96ee12ec7
     max_length: 512
