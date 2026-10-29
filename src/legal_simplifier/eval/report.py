@@ -12,7 +12,8 @@ most recent):
 * ``docs/figures/metric_bars.png``: one panel per metric, CIs as error bars;
 * ``docs/figures/quality_vs_cost.png``: quality against USD per 1,000 clauses.
   The Claude system's cost is summed from the cost log (matched by request key);
-  local systems are marked "cost pending" until Phase 5 measures serving cost;
+  local systems take theirs from ``lcs benchmark`` (``results/benchmarks/``, non-smoke
+  only, GPU price only) and are marked "cost pending" until one exists;
 * ``docs/figures/grpo_reward_curves.png``: ``rewards/<name>/mean`` per step from
   ``log_history.json`` files or Trackio / W&B CSV exports.
 
@@ -31,7 +32,7 @@ from typing import Any
 from legal_simplifier.eval.guards import UnpublishableResultsError, assert_publishable_run
 
 START, END = "<!-- results:start -->", "<!-- results:end -->"
-SKIP_DIRS = frozenset({"cache"})
+SKIP_DIRS = frozenset({"cache", "benchmarks"})  # not eval runs
 SIGNIFICANCE = 0.05
 
 # key, header, direction (+1 higher is better, -1 lower, 0 no "best"), format
@@ -315,6 +316,15 @@ def system_costs(
     return costs
 
 
+def _local_costs(results_dir: Path, manifest: Mapping[str, Any]) -> dict[str, float]:
+    """Serving cost of local systems from ``lcs benchmark`` results (non-smoke only)."""
+
+    from legal_simplifier.serving.benchmark import benchmark_costs
+
+    local = {s["name"] for s in manifest["systems"] if s["kind"] != "claude"}
+    return {name: usd for name, usd in benchmark_costs(results_dir).items() if name in local}
+
+
 def plot_quality_vs_cost(
     manifest: Mapping[str, Any],
     metrics: Mapping[str, Any],
@@ -347,7 +357,7 @@ def plot_quality_vs_cost(
         left.set_xticks(
             range(len(pending)), [n for n, _, _ in pending], rotation=45, ha="right", fontsize=8
         )
-    left.set_title("cost pending (Phase 5 serving numbers)", fontsize=10)
+    left.set_title("cost pending (no `lcs benchmark` result yet)", fontsize=10)
     left.set_ylabel(label)
     if measured:
         right.scatter([c for _, c, _ in measured], [q for _, _, q in measured], color="#C44E52")
@@ -360,7 +370,9 @@ def plot_quality_vs_cost(
         right.text(
             0.5, 0.5, "no measured costs yet", ha="center", va="center", transform=right.transAxes
         )
-    right.set_xlabel("USD per 1,000 clauses (Batch API, from the cost log)")
+    right.set_xlabel(
+        "USD per 1,000 clauses (Claude: Batch API cost log; local: lcs benchmark, GPU only)"
+    )
     right.set_title("measured cost", fontsize=10)
     fig.suptitle(f"Quality vs cost · {dataset}")
     fig.tight_layout()
@@ -474,7 +486,10 @@ def generate_report(
         "Quality vs cost": plot_quality_vs_cost(
             manifest,
             metrics,
-            system_costs(manifest, rows, Path(cost_log) if cost_log else None),
+            {
+                **system_costs(manifest, rows, Path(cost_log) if cost_log else None),
+                **_local_costs(results_dir, manifest),
+            },
             figures_dir / "quality_vs_cost.png",
             dataset,
             validated,

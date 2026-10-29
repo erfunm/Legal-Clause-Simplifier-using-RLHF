@@ -1,0 +1,23 @@
+# CPU smoke: tiny random model, a handful of clauses. Numbers are meaningless and marked smoke,
+# so lcs report ignores them.
+experiment:
+  name: smoke-bench
+  seed: 0
+  smoke: true
+
+serve:
+  model:
+    name_or_path: checkpoints/smoke/sft/merged
+    dtype: float32
+  model_label: smoke-sft
+  engine: transformers
+  max_new_tokens: 8
+
+clauses_path: data/smoke/processed/test.jsonl
+n_clauses: 6
+warmup: 1
+batch_size: 3
+gpu: CPU (smoke)
+gpu_hourly_usd: null
+eval_run: null
+output_dir: results/smoke/benchmarks
