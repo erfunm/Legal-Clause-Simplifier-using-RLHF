@@ -104,10 +104,50 @@ def tokens(text: str) -> list[str]:
     return _TOKEN.findall(normalise_for_match(text))
 
 
+_SPAN_END = re.compile(r"[,;:]|[.!?](?=\s|$)")
+# Markers that open a subordinate clause (which can carry its own modal verb). Time limits
+# and prepositional markers ("within", "in 30 days", "until", "subject to", "except for")
+# qualify a phrase, not a clause, so they never start a span.
+SUBORDINATE = re.compile(
+    r"\b(?:unless|only\s+(?:if|when)|(?:but|except)\s+(?:not\s+)?(?:if|when|where)|except\s+that"
+    r"|provided\s*,?\s+(?:however\s*,?\s+)?that|in\s+the\s+event\s+that"
+    r"|on\s+(?:the\s+)?condition\s+that|(?:as|so)\s+long\s+as|even\s+(?:if|though)|in\s+case"
+    r"|if|when|whenever)\b",
+    re.IGNORECASE,
+)
+
+
+def main_statements(text: str) -> str:
+    """``text`` without its conditional clauses: a subordinating marker up to the next , ; : or
+    sentence end.
+
+    Modal verbs inside a condition qualify the main statement rather than state
+    one ("unless either party gives notice that it will not renew"; "provided
+    that no termination shall take effect before ..."), so they are not counted
+    as obligations, permissions or prohibitions. Whether the conditions survive
+    is ``condition_drop``'s job. A fronted condition ends at its comma, so the
+    main clause after it ("If the Buyer pays late, the Seller may ...") counts.
+    """
+
+    pieces, pos = [], 0
+    for match in SUBORDINATE.finditer(text):
+        if match.start() < pos:
+            continue
+        pieces.append(text[pos : match.start()])
+        end = _SPAN_END.search(text, match.end())
+        pos = end.start() if end else len(text)
+    pieces.append(text[pos:])
+    return " ".join(pieces)
+
+
 def modality(text: str) -> Counter[str]:
-    """Count obligation, permission and prohibition statements (prohibitions first)."""
+    """Count obligation, permission and prohibition statements outside conditions.
+
+    Prohibitions are matched first, so "shall not" is not also an obligation.
+    """
 
     counts: Counter[str] = Counter()
+    text = main_statements(text)
     rest = text
     for match in PROHIBITION.finditer(text):
         counts["prohibition"] += 1

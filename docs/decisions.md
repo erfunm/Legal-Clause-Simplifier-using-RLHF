@@ -372,6 +372,11 @@ Further details:
 - **verbatim_copy:** the output is identical to the clause after normalisation, or ≥ 85% of its word 4-grams occur in the clause.
 - **word_salad:** two or more entities are present, and either one is repeated 3+ times, or fewer than 4 (or under 25%) of the remaining words are not entities. The share was first 40%. The tests showed that a grammatical, entity-dense legal sentence has about 35% non-entity words, so the threshold was lowered.
 - **modality_flip:** a prohibition loses its negation, a prohibition is added, or the obligation count falls while the permission count rises (must → may), or the reverse (may → must). Counts rather than presence, so clauses that mix "must" and "may" are still checked.
+  - *Revised at the start of Phase 5.* The eval-gate fixture showed two false positives on faithful rewrites: "…unless either party gives notice that it **will not** renew" and "…provided that **no termination shall** take effect before…". In both, the modal verb sits inside a *condition*, which qualifies the main statement rather than stating one. Because the detector feeds the GRPO `format` reward, false positives would teach the policy to avoid correct phrasing.
+  - `modality()` (used by `modality_flip` and `truncation`) now counts only main statements. A conditional clause, from a subordinating marker ("unless", "if", "provided (however) that", "except that/if", "in the event that", "as long as", "when", …) to the next `,` `;` `:` or sentence end, is removed first.
+  - Time-limit and prepositional markers ("within", "in 30 days", "until", "subject to", "except for") are phrases, not clauses, so they never start a span; otherwise "…within 30 days and shall not sublicense" would hide the prohibition.
+  - A fronted condition ends at its comma, so "If the Buyer pays late, the Seller may…" still counts. A flip *inside* a proviso is no longer this detector's to catch. That case is left to `condition_drop`, NLI coverage and the judge.
+  - Both fixture cases are regression tests. The gate fixture was rebuilt, and its `modality_flip` baseline is now 0.
 - **condition_drop** *(Phase 3 follow-up)*: the output has fewer condition, exception or time-limit markers than the clause.
   - Markers: "unless", "except", "provided (however) that", "subject to", "if", "only if", "until", "within", "notwithstanding", "in the event of/that", "on condition that", "as/so long as", "no later than", "even if" and "regardless of".
   - Plain-English equivalents count too: "only when", "but not if", "except if", "in case", "when", and "in 10 (business) days" for a time limit.
@@ -525,4 +530,4 @@ These are surface heuristics. A fluent paraphrase that changes the meaning gets 
   - The thresholds are the fixture's own baseline minus a tolerance.
   - A rule-degraded copy of the fixture fails the gate, and a test proves it.
   - What the gate guards is the scoring code (a change that stops a detector firing trips it), not model quality.
-  - Building it found two `modality_flip` false positives on faithful rewrites ("it will not renew"; "no termination shall take effect before…"). They are kept in the fixture and its baseline as known misses, to recalibrate on real outputs.
+  - Building it found two `modality_flip` false positives on faithful rewrites ("it will not renew"; "no termination shall take effect before…"). They are fixed at the start of Phase 5 (ADR-020) and kept as regression tests.
