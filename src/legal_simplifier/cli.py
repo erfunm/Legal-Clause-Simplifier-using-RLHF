@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Callable
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
-from typing import Annotated, TypeVar
+from typing import Annotated, Any, TypeVar
 
 import typer
 
@@ -390,11 +390,247 @@ def detect_hacking(
     typer.echo(f"Wrote {target / 'summary.json'} and {target / 'flagged.jsonl'}")
 
 
-@app.command("evaluate")
-def evaluate() -> None:
-    """Run every system on the eval sets and write results/<run>/."""
+EvalConfigOption = Annotated[Path, typer.Option("--config", help="Eval YAML (configs/eval.yaml).")]
+CountTokensOption = Annotated[
+    str,
+    typer.Option(
+        help="How --dry-run counts input tokens: local (offline approximation) or api "
+        "(Anthropic's free token-counting endpoint; needs ANTHROPIC_API_KEY).",
+    ),
+]
 
-    _not_yet("evaluate", 4)
+
+def _counter(count_tokens: str, client: Any | None) -> Any:
+    from legal_simplifier.llm.estimate import ApiTokenCounter, LocalTokenCounter
+
+    if count_tokens not in ("local", "api"):
+        raise typer.BadParameter("must be local or api", param_hint="--count-tokens")
+    return (
+        ApiTokenCounter(client.messages)
+        if count_tokens == "api" and client is not None
+        else LocalTokenCounter()
+    )
+
+
+def _gate_paid(
+    label: str,
+    runner: Any,
+    requests: Sequence[Mapping[str, Any]],
+    *,
+    model: str,
+    counter: Any,
+    dry_run: bool,
+    yes: bool,
+) -> None:
+    """Print what would be sent and its cost range; exit unless the user said --yes."""
+
+    from legal_simplifier.llm.estimate import describe, estimate_cost
+
+    measured = [
+        int(e["usage"].get("output_tokens") or 0)
+        for e in runner.cost_log.entries()
+        if e.get("model") == model and e.get("usage")
+    ]
+    typer.echo(f"{label}: {len(requests)} requests would be submitted (cached ones are free).")
+    estimate = estimate_cost(requests, counter, measured_output_tokens=measured)
+    if estimate is not None:
+        typer.echo(describe(estimate))
+    if dry_run:
+        typer.echo("Dry run: nothing was sent.", err=True)
+        raise typer.Exit(code=0)
+    if requests and not yes:
+        typer.echo(
+            "Refusing to call the paid Anthropic API without --yes (nothing was sent).", err=True
+        )
+        raise typer.Exit(code=1)
+
+
+@app.command("evaluate")
+def evaluate(
+    config: EvalConfigOption = Path("configs/eval.yaml"),
+    run: Annotated[str | None, typer.Option(help="Run name (default: experiment.name).")] = None,
+    limit: Annotated[
+        int | None, typer.Option(min=1, help="Pilot: N items per dataset, category-balanced.")
+    ] = None,
+    dry_run: Annotated[
+        bool, typer.Option(help="Send and generate nothing; print the plan and cost.")
+    ] = False,
+    yes: Annotated[bool, typer.Option("--yes", help="Confirm the paid Claude system.")] = False,
+    skip_paid: Annotated[
+        bool, typer.Option(help="Leave out paid systems (Claude) this run.")
+    ] = False,
+    count_tokens: CountTokensOption = "local",
+) -> None:
+    """Run every system on the golden set (and dev), score them, write results/<run>/."""
+
+    from legal_simplifier.config import EvalConfigFile, load_config
+    from legal_simplifier.eval.evaluate import (
+        build_systems,
+        eval_set_for_run,
+        paid_plan,
+        run_evaluation,
+    )
+    from legal_simplifier.eval.systems import GenerationCache
+
+    cfg = load_config(config, EvalConfigFile)
+    systems = build_systems(cfg)
+    if skip_paid:
+        systems = [s for s in systems if not s.paid]
+    items = eval_set_for_run(cfg, limit).items
+    cache = GenerationCache(cfg.cache_dir)
+    for system in systems:
+        cached = cache.load(system)
+        n_cached = sum(i.key in cached for i in items)
+        typer.echo(f"{system.name} [{system.spec.kind}]: {n_cached} of {len(items)} outputs cached")
+    for system, requests in paid_plan(systems, items, cache):
+        _gate_paid(
+            f"Claude system '{system.name}' ({cfg.claude.model})",
+            system.runner(),
+            requests,
+            model=cfg.claude.model,
+            counter=_counter(count_tokens, system.client),
+            dry_run=dry_run,
+            yes=yes,
+        )
+    if dry_run:
+        typer.echo("Dry run: nothing was generated.")
+        return
+    run_dir = run_evaluation(cfg, run_name=run, limit=limit, systems=systems)
+    typer.echo(f"Wrote {run_dir}")
+
+
+@app.command("judge")
+def judge(
+    run_dir: Annotated[Path, typer.Option("--run", help="An eval run directory (results/<run>).")],
+    config: EvalConfigOption = Path("configs/eval.yaml"),
+    backend: Annotated[
+        str | None, typer.Option(help="claude | hf | proxy (overrides judge.backend).")
+    ] = None,
+    limit: Annotated[
+        int | None, typer.Option(min=1, help="Pilot: judge N clauses, category-balanced.")
+    ] = None,
+    dry_run: Annotated[
+        bool, typer.Option(help="Send nothing; print the request count and cost.")
+    ] = False,
+    yes: Annotated[bool, typer.Option("--yes", help="Confirm paid Claude judge calls.")] = False,
+    count_tokens: CountTokensOption = "local",
+) -> None:
+    """Blind LLM-as-judge on the rubric; writes judgements_<backend>.jsonl and updates metrics.json."""
+
+    from legal_simplifier.config import EvalConfigFile, load_config
+    from legal_simplifier.eval.evaluate import aggregate_run, load_run
+    from legal_simplifier.eval.judge import ClaudeJudge, make_judge, select_tasks, write_judgements
+
+    cfg = load_config(config, EvalConfigFile)
+    if backend is not None:
+        cfg.judge.backend = backend  # type: ignore[assignment]
+        cfg = EvalConfigFile.model_validate(cfg.model_dump())
+    _, rows = load_run(run_dir)
+    tasks = select_tasks(rows, seed=cfg.judge.seed, limit=limit, pilot_seed=cfg.judge.pilot_seed)
+    judge_ = make_judge(cfg.judge)
+    if isinstance(judge_, ClaudeJudge):
+        _gate_paid(
+            f"Judge ({cfg.judge.model}) on {len(tasks)} clauses",
+            judge_.runner,
+            list(judge_.runner.unsubmitted(judge_.requests(tasks))),
+            model=cfg.judge.model,
+            counter=_counter(count_tokens, judge_.client),
+            dry_run=dry_run,
+            yes=yes,
+        )
+    elif dry_run:
+        typer.echo(
+            f"Dry run: {len(tasks)} clauses would be judged by the {judge_.backend} backend."
+        )
+        return
+    result = judge_.judge(tasks)
+    path = write_judgements(run_dir, judge_.backend, result.rows)
+    aggregate_run(run_dir, cfg)
+    typer.echo(
+        f"Wrote {len(result.rows)} judgements to {path}; failures: {result.failures or 'none'}"
+    )
+
+
+@app.command("label-judge")
+def label_judge(
+    run_dir: Annotated[Path, typer.Option("--run", help="An eval run directory.")],
+    reviewer: Annotated[str, typer.Option(help="Your name, recorded with every label.")],
+    n: Annotated[
+        int, typer.Option(help="Outputs to sample into the queue (first time only).")
+    ] = 80,
+    port: Annotated[int, typer.Option()] = 7861,
+) -> None:
+    """Score a blind sample of outputs on the judge's rubric (local page) to validate the judge."""
+
+    from legal_simplifier.eval.label_app import build_app
+    from legal_simplifier.eval.labels import QUEUE_FILE, build_queue, label_dir
+
+    if not (label_dir(run_dir) / QUEUE_FILE).exists():
+        typer.echo(f"Sampled {len(build_queue(run_dir, n=n))} outputs into the label queue.")
+    build_app(run_dir, reviewer).launch(server_port=port, share=False)
+
+
+@app.command("judge-agreement")
+def judge_agreement(
+    run_dir: Annotated[Path, typer.Option("--run", help="An eval run directory.")],
+    backend: Annotated[str, typer.Option(help="The judge to validate.")] = "claude",
+    other: Annotated[
+        str, typer.Option(help="Second judge to compare with, if it has judged the run.")
+    ] = "hf",
+) -> None:
+    """Spearman and quadratic-weighted kappa (bootstrap CIs) between human labels and the judge."""
+
+    from legal_simplifier.eval.agreement import describe
+    from legal_simplifier.eval.agreement import judge_agreement as run_agreement
+
+    try:
+        result = run_agreement(run_dir, backend=backend, other=other)
+    except FileNotFoundError as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+    typer.echo(describe(result))
+
+
+@app.command("error-analysis")
+def error_analysis(
+    run_dir: Annotated[Path, typer.Option("--run", help="An eval run directory.")],
+    samples: Annotated[int, typer.Option(help="Examples to show per failure type.")] = 3,
+    config: EvalConfigOption = Path("configs/eval.yaml"),
+) -> None:
+    """Group failures into a taxonomy (detectors, metrics, low judge scores) with counts and examples."""
+
+    from legal_simplifier.config import EvalConfigFile, load_config
+    from legal_simplifier.eval.error_analysis import error_analysis as run_analysis
+
+    low = load_config(config, EvalConfigFile).judge.low_score if config.exists() else 2
+    result = run_analysis(run_dir, samples_per_type=samples, low_score=low)
+    for name, per in result["counts"].items():
+        if any(per.values()):
+            typer.echo(f"{name}: " + ", ".join(f"{s} {n}" for s, n in per.items()))
+    typer.echo(f"Wrote {run_dir / 'error_analysis.md'}")
+
+
+@app.command("eval-gate")
+def eval_gate(
+    examples: Annotated[Path, typer.Option(help="Frozen outputs to re-score.")] = Path(
+        "tests/fixtures/eval_gate/examples.jsonl"
+    ),
+    thresholds: Annotated[Path, typer.Option(help="Allowed ranges per metric.")] = Path(
+        "tests/fixtures/eval_gate/thresholds.json"
+    ),
+) -> None:
+    """CI gate: re-score stored outputs (mock fixture) and fail if a metric leaves its range."""
+
+    from legal_simplifier.eval.gate import run_gate
+
+    result = run_gate(examples, thresholds)
+    for name, value in result.metrics.items():
+        typer.echo(f"  {name}: {value:.3f}")
+    if not result.passed:
+        for failure in result.failures:
+            typer.echo(f"FAIL {failure}", err=True)
+        raise typer.Exit(code=1)
+    typer.echo("Eval gate passed.")
 
 
 @app.command("serve")
@@ -407,20 +643,38 @@ def serve() -> None:
 @app.command("report")
 def report(
     results_dir: Annotated[Path, typer.Option("--results-dir")] = Path("results"),
+    run: Annotated[str | None, typer.Option(help="Primary run (default: the most recent).")] = None,
+    readme: Annotated[
+        Path, typer.Option(help="README to update between the results markers.")
+    ] = Path("README.md"),
+    figures_dir: Annotated[Path, typer.Option()] = Path("docs/figures"),
+    training_log: Annotated[
+        list[Path] | None,
+        typer.Option(help="GRPO log_history.json or a Trackio/W&B CSV export (repeatable)."),
+    ] = None,
+    cost_log: Annotated[Path, typer.Option()] = Path("data/cache/anthropic/cost_log.jsonl"),
 ) -> None:
-    """Build results tables and figures. Refuses mock references and smoke runs."""
+    """Build the README results table and docs/figures/. Refuses mock references and smoke runs."""
 
     from legal_simplifier.eval.guards import UnpublishableResultsError
     from legal_simplifier.eval.report import generate_report
 
+    logs = training_log if training_log is not None else [Path("checkpoints/grpo/log_history.json")]
     try:
-        generate_report(results_dir)
+        result = generate_report(
+            results_dir,
+            run=run,
+            readme=readme,
+            figures_dir=figures_dir,
+            training_logs=logs,
+            cost_log=cost_log,
+        )
     except UnpublishableResultsError as exc:
         typer.echo(f"error: {exc}", err=True)
         raise typer.Exit(code=1) from exc
-    except NotImplementedError as exc:
-        typer.echo(str(exc), err=True)
-        raise typer.Exit(code=2) from exc
+    typer.echo(
+        f"Report from {result.run}: {result.readme}, {result.report_md}, {len(result.figures)} figures"
+    )
 
 
 if __name__ == "__main__":

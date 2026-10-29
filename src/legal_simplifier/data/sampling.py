@@ -4,11 +4,17 @@ from __future__ import annotations
 
 import random
 from collections.abc import Sequence
-from typing import TypeVar
+from typing import Protocol, TypeVar
 
-from legal_simplifier.data.schema import ClauseCandidate
 
-C = TypeVar("C", bound=ClauseCandidate)
+class Sampleable(Protocol):
+    @property
+    def id(self) -> str: ...
+    @property
+    def category(self) -> str: ...
+
+
+C = TypeVar("C", bound=Sampleable)
 
 
 def balanced_sample(items: Sequence[C], size: int, *, seed: int) -> list[C]:
