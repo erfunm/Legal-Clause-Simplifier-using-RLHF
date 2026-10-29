@@ -280,3 +280,56 @@ def test_eval_gate_cli_exit_codes() -> None:
         ],
     )
     assert bad.exit_code == 1 and "FAIL entity_recall" in bad.output
+
+
+# --- only validated judge criteria reach the headline table ----------------------------------
+
+
+def _judged_run(run_dir: Path, validated: list[str] | None, judge: str = "claude") -> None:
+    _, rows = load_run(run_dir)
+    judged = [
+        {**r, "backend": "claude"} for r in ProxyJudge().judge(build_tasks(rows, seed=0)).rows
+    ]
+    write_judgements(run_dir, "claude", judged)
+    aggregate_run(run_dir)
+    if validated is not None:
+        (run_dir / "agreement.json").write_text(
+            json.dumps({"judge": judge, "validated_criteria": validated})
+        )
+
+
+def _section(run_dir: Path, tmp_path: Path) -> tuple[str, str]:
+    readme = tmp_path / "README.md"
+    readme.write_text(README)
+    generate_report(run_dir.parent, readme=readme, figures_dir=tmp_path / "figures", cost_log=None)
+    section = readme.read_text().split(START)[1].split(END)[0]
+    headline, _, rest = section.partition("**Not validated.**")
+    return headline, rest
+
+
+def test_report_puts_only_validated_judge_criteria_in_the_headline(
+    run_dir: Path, tmp_path: Path
+) -> None:
+    _judged_run(run_dir, ["meaning_preserved", "obligations_intact"])
+    headline, unvalidated = _section(run_dir, tmp_path)
+    assert "meaning preserved" in headline and "obligations intact" in headline
+    assert "plain language" not in headline and "no added facts" not in headline
+    assert "plain language" in unvalidated and "no added facts" in unvalidated
+    assert "meaning preserved" not in unvalidated
+
+
+def test_without_validation_every_judge_criterion_is_marked_not_validated(
+    run_dir: Path, tmp_path: Path
+) -> None:
+    _judged_run(run_dir, None)
+    headline, unvalidated = _section(run_dir, tmp_path)
+    assert not any(c in headline for c in ("meaning preserved", "plain language"))
+    assert "have not met the acceptance bar" in unvalidated and "plain language" in unvalidated
+
+
+def test_agreement_for_another_judge_does_not_validate_this_one(
+    run_dir: Path, tmp_path: Path
+) -> None:
+    _judged_run(run_dir, ["meaning_preserved"], judge="hf")
+    headline, _ = _section(run_dir, tmp_path)
+    assert "meaning preserved" not in headline

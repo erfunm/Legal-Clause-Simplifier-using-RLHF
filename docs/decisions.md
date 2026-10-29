@@ -505,7 +505,12 @@ These are surface heuristics. A fluent paraphrase that changes the meaning gets 
   - The bootstrap resamples *outputs*, so two reviewers do not double n.
   - Fewer than 30 labelled outputs is flagged "not reliable".
   - Both statistics are cross-checked in the tests against scikit-learn and SciPy reference values.
-- **No acceptance bar has been chosen yet.** One will be set before the first real labels (a κ around 0.6 is a common "substantial agreement" line), and judge columns stay out of the README until agreement is reported.
+- **Acceptance bar** *(set at the start of Phase 5, before any real labels exist)*. A judge criterion is **validated** only if quadratic-weighted κ ≥ 0.6 **and** Spearman ρ ≥ 0.6, **and** the lower bound of each one's 95% bootstrap CI ≥ 0.4.
+  - 0.6 is the usual start of "substantial" agreement. The lower-bound rule stops a lucky point estimate from a small sample passing, so in practice the 50–100 labelled outputs are needed.
+  - `lcs judge-agreement` prints PASS or FAIL for each criterion, with the reasons, and writes `validated_criteria` to `agreement.json`.
+  - `lcs report` puts only validated criteria in the headline table and the bar chart, and uses only them for the quality axis of the quality-vs-cost chart. Every other criterion appears in a separate section marked **Not validated**.
+  - If a run has no `agreement.json` for its own judge backend, nothing counts as validated. Agreement measured for the open-weight judge does not validate the Claude judge, or the reverse.
+  - Judge-vs-judge agreement (Claude vs Granite) is informational and has no bar.
 
 ---
 

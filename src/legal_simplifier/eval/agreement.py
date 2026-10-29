@@ -24,6 +24,31 @@ from legal_simplifier.eval.labels import latest_labels
 
 AGREEMENT_FILE = "agreement.json"
 MIN_RELIABLE_N = 30
+# The acceptance bar (docs/decisions.md, ADR-026), fixed before any real labels: for each
+# criterion, quadratic-weighted kappa and Spearman both at least MIN_VALUE, and the lower
+# bound of each one's 95% bootstrap CI at least MIN_LOWER_BOUND.
+MIN_VALUE = 0.6
+MIN_LOWER_BOUND = 0.4
+ACCEPTANCE = {
+    "min_value": MIN_VALUE,
+    "min_lower_bound": MIN_LOWER_BOUND,
+    "statistics": ["quadratic_kappa", "spearman"],
+}
+
+
+def acceptance(row: Mapping[str, Any]) -> tuple[bool, list[str]]:
+    """Whether one criterion's agreement meets the bar, and the reasons it does not."""
+
+    reasons = []
+    for stat in ACCEPTANCE["statistics"]:
+        value, low = row[stat]["value"], row[stat]["low"]
+        if value is None or value < MIN_VALUE:
+            reasons.append(f"{stat} {value if value is None else round(value, 2)} < {MIN_VALUE}")
+        if low is None or low < MIN_LOWER_BOUND:
+            reasons.append(
+                f"{stat} CI lower bound {low if low is None else round(low, 2)} < {MIN_LOWER_BOUND}"
+            )
+    return not reasons, reasons
 
 
 def _ranks(values: np.ndarray) -> np.ndarray:
@@ -147,10 +172,15 @@ def judge_agreement(
         if key in judge:
             for c in CRITERIA:
                 human_pairs[c].append((lab["queue_id"], int(lab["scores"][c]), int(judge[key][c])))
+    table = agreement_table(human_pairs, n_boot=n_boot, seed=seed)
+    for row in table.values():
+        row["passes"], row["fails_because"] = acceptance(row)
     result: dict[str, Any] = {
         "judge": backend,
         "reviewers": sorted({lab["reviewer"] for lab in labels}),
-        "human_vs_judge": agreement_table(human_pairs, n_boot=n_boot, seed=seed),
+        "acceptance": ACCEPTANCE,
+        "human_vs_judge": table,
+        "validated_criteria": sorted(c for c, row in table.items() if row["passes"]),
     }
     second = _judge_scores(run_dir, other) if other else {}
     if second:
@@ -164,10 +194,30 @@ def judge_agreement(
     return result
 
 
+def validated_criteria(run_dir: Path | str, backend: str | None) -> set[str]:
+    """Judge criteria that passed the bar for ``backend`` in this run (empty if never checked)."""
+
+    path = Path(run_dir) / AGREEMENT_FILE
+    if backend is None or not path.exists():
+        return set()
+    result = json.loads(path.read_text(encoding="utf-8"))
+    if result.get("judge") != backend:
+        return set()
+    return set(result.get("validated_criteria", []))
+
+
 def describe(result: Mapping[str, Any]) -> str:
-    lines = []
+    bar = result.get("acceptance")
+    lines = (
+        [
+            f"Acceptance bar per criterion: QWK and Spearman >= {bar['min_value']}, "
+            f"and each 95% CI lower bound >= {bar['min_lower_bound']}."
+        ]
+        if bar
+        else []
+    )
     for section, table in result.items():
-        if not isinstance(table, dict):
+        if not isinstance(table, dict) or section == "acceptance":
             continue
         lines.append(f"{section}:")
         for criterion, row in table.items():
@@ -179,8 +229,13 @@ def describe(result: Mapping[str, Any]) -> str:
                 return f"{stat['value']:.2f}{ci}"
 
             flag = "" if row["reliable"] else f"  (only {row['n_outputs']} outputs: not reliable)"
+            verdict = ""
+            if "passes" in row:
+                verdict = (
+                    "  PASS" if row["passes"] else "  FAIL: " + "; ".join(row["fails_because"])
+                )
             lines.append(
                 f"  {criterion}: Spearman {fmt(row['spearman'])}, QWK {fmt(row['quadratic_kappa'])}, "
-                f"n={row['n_labels']}{flag}"
+                f"n={row['n_labels']}{flag}{verdict}"
             )
     return "\n".join(lines)

@@ -183,7 +183,7 @@ uv run lcs label-judge --run results/eval-v1 --reviewer "Your Name" --n 80
 uv run lcs judge-agreement --run results/eval-v1      # Spearman and QWK per criterion, bootstrap CIs
 ```
 
-Decide the acceptance bar before you look (ADR-026). If the judge also ran with `--backend hf` (4a, `--judge-hf`), the output includes Claude-vs-Granite agreement: a gap that favours the Claude system is self-preference (ADR-025).
+Each criterion prints PASS or FAIL against the acceptance bar fixed in ADR-026: QWK and Spearman ≥ 0.6, each with a 95% CI lower bound ≥ 0.4. Only passing criteria appear in the README's headline table; the rest are reported as not validated. If the judge also ran with `--backend hf` (4a, `--judge-hf`), the output includes Claude-vs-Granite agreement: a gap that favours the Claude system is self-preference (ADR-025).
 
 ```bash
 # 4d. Error analysis, then the report (refuses mock references and smoke runs).

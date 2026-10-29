@@ -149,9 +149,25 @@ def _dataset_order(datasets: Sequence[str]) -> list[str]:
     return sorted(datasets, key=lambda d: (d != "golden", d))
 
 
+def judge_columns(
+    validated: set[str],
+) -> tuple[list[tuple[str, str, int, str]], list[tuple[str, str, int, str]]]:
+    """(criteria that passed the ADR-026 bar, criteria that did not or were never checked)."""
+
+    passed = [c for c in JUDGE_COLUMNS if c[0].removeprefix("judge/") in validated]
+    return passed, [c for c in JUDGE_COLUMNS if c not in passed]
+
+
 def render_section(
-    manifest: Mapping[str, Any], metrics: Mapping[str, Any], figures: Mapping[str, str]
+    manifest: Mapping[str, Any],
+    metrics: Mapping[str, Any],
+    figures: Mapping[str, str],
+    validated: set[str] | None = None,
 ) -> str:
+    """The README section. Only judge criteria in ``validated`` join the headline table."""
+
+    judged = metrics.get("judge_backend") not in (None, "proxy")
+    passed, unvalidated = judge_columns(validated or set()) if judged else ([], [])
     systems = [s["name"] for s in manifest["systems"]]
     golden = manifest.get("golden_status") or {}
     parts = [
@@ -173,11 +189,24 @@ def render_section(
             "",
             f"#### {dataset} ({manifest['datasets'].get(dataset)} clauses)",
             "",
-            render_table(metrics, dataset, COLUMNS, systems),
+            render_table(metrics, dataset, [*COLUMNS, *passed], systems),
         ]
-        judge = render_table(metrics, dataset, JUDGE_COLUMNS, systems)
-        if judge and metrics.get("judge_backend") not in (None, "proxy"):
-            parts += ["", f"LLM judge (`{metrics['judge_backend']}`, 1-5, blind):", "", judge]
+        if passed:
+            parts += [
+                "",
+                f"Judge columns (`{metrics['judge_backend']}`, 1-5, blind) are criteria whose "
+                "agreement with human labels met the acceptance bar (ADR-026).",
+            ]
+        late = render_table(metrics, dataset, unvalidated, systems) if unvalidated else ""
+        if late:
+            parts += [
+                "",
+                f"**Not validated.** These LLM-judge criteria (`{metrics['judge_backend']}`) have "
+                "not met the acceptance bar against human labels (`lcs judge-agreement`), so they "
+                "are not part of the results above:",
+                "",
+                late,
+            ]
         seeds = render_seeds(metrics, dataset)
         if seeds:
             parts += ["", "Mean ± std across training seeds:", "", seeds]
@@ -207,13 +236,20 @@ def _plt() -> Any:
 
 
 def plot_metric_bars(
-    manifest: Mapping[str, Any], metrics: Mapping[str, Any], path: Path, dataset: str
+    manifest: Mapping[str, Any],
+    metrics: Mapping[str, Any],
+    path: Path,
+    dataset: str,
+    validated: set[str] | None = None,
 ) -> Path:
+    """One panel per metric; judge criteria only if they passed the acceptance bar."""
+
     plt = _plt()
     systems = [s["name"] for s in manifest["systems"]]
+    passed, _ = judge_columns(validated or set())
     cols = [
         c
-        for c in (*COLUMNS, *JUDGE_COLUMNS)
+        for c in (*COLUMNS, *passed)
         if any(metrics["systems"][s][dataset].get(c[0]) for s in systems)
     ]
     ncols = 4
@@ -285,13 +321,15 @@ def plot_quality_vs_cost(
     costs: Mapping[str, float | None],
     path: Path,
     dataset: str,
+    validated: set[str] | None = None,
 ) -> Path:
     """Measured-cost systems on a scatter; systems without a cost yet in a side panel."""
 
     plt = _plt()
-    judged = metrics.get("judge_backend") not in (None, "proxy")
-    keys = [c[0] for c in JUDGE_COLUMNS] if judged else ["sari"]
-    label = "judge score (mean of 4 criteria)" if judged else "SARI"
+    passed = [c[0] for c in JUDGE_COLUMNS if c[0].removeprefix("judge/") in (validated or set())]
+    judged = metrics.get("judge_backend") not in (None, "proxy") and bool(passed)
+    keys = passed if judged else ["sari"]
+    label = f"judge score (mean of {len(passed)} validated criteria)" if judged else "SARI"
     measured, pending = [], []
     for desc in manifest["systems"]:
         name = desc["name"]
@@ -423,12 +461,15 @@ def generate_report(
 
     _, rows = load_run(primary)
 
+    from legal_simplifier.eval.agreement import validated_criteria
+
+    validated = validated_criteria(primary, metrics.get("judge_backend"))
     figures_dir = Path(figures_dir)
     figures_dir.mkdir(parents=True, exist_ok=True)
     dataset = "golden" if "golden" in metrics["datasets"] else metrics["datasets"][0]
     figures: dict[str, Path] = {
         "Metrics per system": plot_metric_bars(
-            manifest, metrics, figures_dir / "metric_bars.png", dataset
+            manifest, metrics, figures_dir / "metric_bars.png", dataset, validated
         ),
         "Quality vs cost": plot_quality_vs_cost(
             manifest,
@@ -436,6 +477,7 @@ def generate_report(
             system_costs(manifest, rows, Path(cost_log) if cost_log else None),
             figures_dir / "quality_vs_cost.png",
             dataset,
+            validated,
         ),
     }
     curves = plot_reward_curves(
@@ -445,7 +487,7 @@ def generate_report(
         figures["GRPO reward curves"] = curves
 
     relative = {title: p.as_posix() for title, p in figures.items()}
-    section = render_section(manifest, metrics, relative)
+    section = render_section(manifest, metrics, relative, validated)
     report_md = results_dir / "report.md"
     report_md.write_text(f"# Results\n\n{section}", encoding="utf-8")
     readme_path = None
