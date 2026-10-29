@@ -15,7 +15,7 @@ Output layout under ``training.output_dir``:
 
 * ``adapter/``: the LoRA adapter, tokenizer and model card (``README.md``).
 * ``merged/``: base + adapter merged into plain weights, tokenizer and card
-  (if ``training.save_merged``). Serving and the Phase 3 trainers load this.
+  (if ``training.save_merged``). Evaluation and serving load this.
 * ``model/``: the full weights instead, when ``lora.enabled`` is false.
 * ``metrics.json``, ``experiment.json`` and ``lora.json`` (wrapped layers and
   parameter counts).

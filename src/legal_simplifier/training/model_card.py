@@ -3,7 +3,7 @@
 Everything in a card comes from ``experiment.json``, ``lora.json``,
 ``metrics.json`` and the training data's ``stats.json``. Training loss is
 shown as a training metric only; evaluation results stay "pending" until
-``lcs report`` produces them from a real evaluation run (Phase 4). Smoke runs
+``lcs report`` produces them from a real evaluation run. Smoke runs
 and runs on mock references get a banner saying they must not be published.
 """
 

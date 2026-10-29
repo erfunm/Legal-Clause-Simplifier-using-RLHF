@@ -1,6 +1,6 @@
 # Runbook: from code to real results
 
-These are the steps, in order, that need real accounts, money or a human. Everything else runs on CPU in CI. Each phase adds its steps here.
+These are the steps, in order, that need real accounts, money, a GPU or a person. Everything else runs on CPU in CI.
 
 ## 0. Local setup
 
@@ -9,7 +9,7 @@ uv sync --all-extras
 make test-all && make smoke
 ```
 
-## 1. Data and references (Phase 1)
+## 1. Data and references
 
 **Needs:** an Anthropic API key with Batches access. Hugging Face login is optional; CUAD downloads anonymously.
 
@@ -69,7 +69,7 @@ huggingface-cli login
 uv run lcs push-dataset --config configs/data.yaml --repo-id <user>/legal-clause-simplification --yes
 ```
 
-## 2. Supervised fine-tuning (Phase 2)
+## 2. Supervised fine-tuning
 
 **Needs:** `data/processed/{train,dev}.jsonl` with Claude references (§1) and one GPU. `configs/sft.yaml` trains a LoRA adapter (r 16) on Qwen/Qwen3.5-0.8B for 3 epochs, in bf16 on one 24 GB GPU (NVIDIA L4 or A10G). A Hugging Face login is not needed, because the base model is public. Logging goes to a local Trackio store by default. For W&B, set `tracking.backend: wandb` and provide `WANDB_API_KEY`.
 
@@ -99,14 +99,14 @@ uv run lcs train-sft --config configs/sft.yaml
 - `merged/`: base and adapter merged into plain weights, which later stages load.
 - `metrics.json`, `experiment.json`, and `lora.json` (which layers were wrapped, and parameter counts).
 
-Check `lora.json`: `unmatched_targets` must be empty, and `left_out` should list only `lm_head` and `linear_attn.in_proj_a/b`. The model card shows the training loss, but its evaluation section stays "pending" until Phase 4's `lcs report`.
+Check `lora.json`: `unmatched_targets` must be empty, and `left_out` should list only `lm_head` and `linear_attn.in_proj_a/b`. The model card shows the training loss, but its evaluation section stays "pending" until `lcs report` runs on a real evaluation (§4).
 
 - **QLoRA (optional, not needed for 0.8B on 24 GB):** set `quantization.load_in_4bit: true` and install the `qlora` extra. The merge always reloads the base in bf16.
 - **Fallback base (Qwen3-1.7B):** swap the `model:` and `lora.target_modules` blocks for the commented ones in `configs/sft.yaml`.
 - **Re-merge or rewrite the cards later:** `uv run lcs merge-adapter --run-dir checkpoints/sft` and `uv run lcs model-card --run-dir checkpoints/sft`.
 - **PUBLISHING:** nothing pushes models to the Hub yet. Publishing the dashboard needs `tracking.trackio_space_id`, and the code refuses an ambient `TRACKIO_SPACE_ID`. Ask before setting either.
 
-## 3. RL post-training: GRPO, DPO and ablations (Phase 3)
+## 3. RL post-training: GRPO, DPO and ablations
 
 **Needs:** the SFT run (§2: `checkpoints/sft/adapter/`), `data/processed/` (§1) and one 24 GB GPU (NVIDIA L4). A Hugging Face login is not needed: the base model and the NLI reward model (`cross-encoder/nli-deberta-v3-base`, about 0.7 GB) are public. Nothing has been run yet.
 
@@ -140,7 +140,7 @@ uv run lcs ablate               # runs them one after another
 
 ```bash
 uv run lcs detect-hacking --outputs data/preferences/samples_train.jsonl   # SFT samples
-# After Phase 4: the same on each system's saved predictions (rows with a `system` field).
+# After §4: the same on each system's saved predictions (rows with a `system` field).
 ```
 
 Read `flagged.jsonl` for before/after examples. If a hack is common, raise its penalty under `rewards.format` (or add a detector), rerun, and record the change in `docs/decisions.md`. Copy the real examples into the README; there are none there until then.
@@ -152,7 +152,7 @@ Read `flagged.jsonl` for before/after examples. If a hack is common, raise its p
 
 **PUBLISHING:** nothing pushes models or completions to the Hub (`log_completions_hub_repo` is always unset). Ask before adding that.
 
-## 4. Evaluation, the judge and the report (Phase 4)
+## 4. Evaluation, the judge and the report
 
 **Needs:** the adapters from §2–3, the golden set from §1, one GPU for the local systems, and an Anthropic key for the Claude system and the judge. Nothing has been run yet.
 
@@ -197,7 +197,7 @@ Copy two or three before/after examples per failure type from `results/eval-v1/e
 
 **CI eval gate:** `make eval-gate` re-scores the frozen mock fixture in `tests/fixtures/eval_gate/`. If you change a detector or the entity matching on purpose, rebuild the fixture (`uv run python tests/fixtures/build_eval_gate.py`) and review the new `thresholds.json` in the PR.
 
-## 5. Serving, the demo and the benchmark (Phase 5)
+## 5. Serving, the demo and the benchmark
 
 **Needs:** a merged model (`checkpoints/grpo/merged`, from §3). Nothing here publishes anything; the Space push is a separate decision.
 
@@ -231,7 +231,3 @@ Optional tracing: set `otel.enabled: true` in `configs/serve.yaml`, install the 
 2. Create a Gradio Space, copy `space/app.py`, `space/README.md` and `space/requirements.txt` into it, and set the Space variable `LCS_MODEL=<user>/legal-clause-simplifier`.
 
 Read the Space README's "not legal advice" text before making it public.
-
-## Later phases
-
-GRPO/DPO training, evaluation (including the human judge-validation labels), serving and Hub publishing will be added here as they are built. Publishing steps always need explicit confirmation.

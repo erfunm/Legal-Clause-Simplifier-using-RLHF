@@ -13,3 +13,5 @@ tests
 docs
 scripts
 *.zip
+.env
+.env.*

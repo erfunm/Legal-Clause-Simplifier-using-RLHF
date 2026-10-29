@@ -1,1 +1,1 @@
-"""Inference service and demo (Phase 5)."""
+"""Inference service, engines, demo and benchmark."""
