@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
@@ -634,10 +635,53 @@ def eval_gate(
 
 
 @app.command("serve")
-def serve() -> None:
-    """Start the FastAPI inference service."""
+def serve(
+    config: Annotated[Path, typer.Option("--config", help="Serve YAML.")] = Path(
+        "configs/serve.yaml"
+    ),
+    host: Annotated[str | None, typer.Option(help="Override host.")] = None,
+    port: Annotated[int | None, typer.Option(help="Override port.")] = None,
+) -> None:
+    """Start the FastAPI service: POST /simplify, POST /simplify/stream (SSE), GET /health."""
 
-    _not_yet("serve", 5)
+    import uvicorn
+
+    from legal_simplifier.config import ServeConfig, load_config
+    from legal_simplifier.serving.app import configure_logging, create_app
+
+    cfg = load_config(config, ServeConfig)
+    configure_logging(cfg.log_level)
+    uvicorn.run(
+        create_app(cfg),
+        host=host or cfg.host,
+        port=port or cfg.port,
+        log_level=cfg.log_level.lower(),
+        access_log=False,  # the app writes its own JSON line per request
+    )
+
+
+@app.command("benchmark")
+def benchmark(
+    config: Annotated[Path, typer.Option("--config", help="Benchmark YAML.")] = Path(
+        "configs/benchmark.yaml"
+    ),
+) -> None:
+    """p50/p95 latency, tokens/s and $ per 1k clauses on a stated GPU, vs the Claude API."""
+
+    from legal_simplifier.config import BenchmarkConfig, load_config
+    from legal_simplifier.serving.benchmark import run_benchmark
+
+    path = run_benchmark(load_config(config, BenchmarkConfig))
+    result = json.loads(path.read_text())
+    lat, thr = result["latency_ms"], result["throughput"]
+    typer.echo(
+        f"{result['system']} on {result['gpu']} ({result['engine']}): p50 {lat['p50']} ms, "
+        f"p95 {lat['p95']} ms, {thr['completion_tokens_per_s']} tokens/s"
+    )
+    typer.echo(f"  ${result['usd_per_1k_clauses']} per 1k clauses ({result['cost_basis']})")
+    claude = result["claude"]
+    typer.echo(f"  Claude: ${claude['usd_per_1k_clauses']} per 1k clauses ({claude['source']})")
+    typer.echo(f"Wrote {path}")
 
 
 @app.command("report")

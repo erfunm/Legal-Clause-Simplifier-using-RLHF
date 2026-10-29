@@ -474,6 +474,62 @@ class EvalConfigFile(StrictModel):
         return self
 
 
+class OTelConfig(StrictModel):
+    """Optional OpenTelemetry tracing (the ``otel`` extra). Off unless enabled here."""
+
+    enabled: bool = False
+    service_name: str = "legal-clause-simplifier"
+    endpoint: str | None = None
+    """OTLP/HTTP endpoint, e.g. http://localhost:4318; ``None`` uses the OTEL_* environment."""
+
+
+class ServeConfig(StrictModel):
+    """Contents of ``configs/serve.yaml``: the model behind ``lcs serve`` and the Space."""
+
+    stage: Literal["serve"] = "serve"
+    model: ModelConfig = Field(
+        default_factory=lambda: ModelConfig(
+            name_or_path="checkpoints/grpo/merged", dtype="bfloat16"
+        )
+    )
+    model_label: str = "sft-grpo"
+    """The system name reported by the API and used to match benchmark cost to eval results."""
+    engine: Literal["auto", "transformers", "vllm"] = "auto"
+    """``auto``: vLLM when a CUDA GPU and vllm are present (falling back if it cannot load the
+    model), otherwise transformers."""
+    max_new_tokens: int = 384
+    max_clause_chars: int = 4000
+    host: str = "127.0.0.1"
+    port: int = 8000
+    log_level: str = "INFO"
+    vllm_gpu_memory_utilization: float = 0.85
+    vllm_max_model_len: int = 4096
+    otel: OTelConfig = Field(default_factory=OTelConfig)
+
+
+class BenchmarkConfig(StrictModel):
+    """Contents of ``configs/benchmark.yaml``: latency, throughput and cost of the served model."""
+
+    stage: Literal["benchmark"] = "benchmark"
+    experiment: ExperimentConfig
+    serve: ServeConfig = Field(default_factory=ServeConfig)
+    clauses_path: Path = Path("data/processed/test.jsonl")
+    n_clauses: int = 200
+    warmup: int = 5
+    batch_size: int = 16
+    """Clauses per call in the throughput pass (the latency pass sends one at a time)."""
+    gpu: str = "NVIDIA L4"
+    gpu_hourly_usd: float | None = None
+    """What the stated GPU costs per hour where it runs. Required for a cost figure; the default
+    config cites its source. ``None`` reports cost as unknown."""
+    gpu_price_source: str | None = None
+    eval_run: Path | None = None
+    """An eval run with a ``claude`` system: its real cost from the cost log is the comparison."""
+    cost_log: Path = Path("data/cache/anthropic/cost_log.jsonl")
+    claude_model: str = "claude-sonnet-5-5"
+    output_dir: Path = Path("results/benchmarks")
+
+
 class ExtractionConfig(StrictModel):
     cuad_json: Path | None = None
     """Local ``CUAD_v1.json``; ``None`` downloads the pinned file from the Hub."""
