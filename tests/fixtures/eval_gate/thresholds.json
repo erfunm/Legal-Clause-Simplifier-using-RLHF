@@ -1,0 +1,38 @@
+{
+  "_note": "MOCK fixture. Set from the good fixture's own scores (build_eval_gate.py) minus a tolerance.",
+  "baseline": {
+    "entity_recall": 0.9833,
+    "detector/truncation": 0.0,
+    "detector/verbatim_copy": 0.0,
+    "detector/word_salad": 0.0,
+    "detector/modality_flip": 0.1,
+    "detector/condition_drop": 0.0,
+    "judge_proxy/meaning_preserved": 4.85,
+    "judge_proxy/no_added_facts": 5.0,
+    "judge_proxy/plain_language": 3.2,
+    "judge_proxy/obligations_intact": 4.8
+  },
+  "thresholds": {
+    "entity_recall": {
+      "min": 0.933
+    },
+    "detector/condition_drop": {
+      "max": 0.05
+    },
+    "detector/modality_flip": {
+      "max": 0.15
+    },
+    "judge_proxy/meaning_preserved": {
+      "min": 4.6
+    },
+    "judge_proxy/no_added_facts": {
+      "min": 4.75
+    },
+    "judge_proxy/plain_language": {
+      "min": 2.95
+    },
+    "judge_proxy/obligations_intact": {
+      "min": 4.55
+    }
+  }
+}
