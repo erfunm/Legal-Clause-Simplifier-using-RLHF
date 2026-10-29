@@ -119,6 +119,7 @@ def test_the_three_ablation_axes_resolve_against_grpo_yaml() -> None:
         "ablation-entity-off",
         "ablation-num-generations-2",
         "ablation-beta-0.04",
+        "ablation-meaning-coverage",
     }
     budget = {a.config.grpo.max_steps for a in runs.values()}
     assert budget == {300}  # equal, small budget
@@ -139,8 +140,9 @@ def test_the_three_ablation_axes_resolve_against_grpo_yaml() -> None:
     assert axis("ablation-entity-off") == {"rewards.weights.entity_preservation": (1.0, 0.0)}
     assert axis("ablation-num-generations-2") == {"grpo.num_generations": (8, 2)}
     assert axis("ablation-beta-0.04") == {"grpo.beta": (0.0, 0.04)}
+    assert axis("ablation-meaning-coverage") == {"rewards.meaning.method": ("nli", "nli_coverage")}
     outputs = {a.config.grpo.output_dir for a in runs.values()}
-    assert len(outputs) == 4 and all(str(p).startswith("checkpoints/ablations/") for p in outputs)
+    assert len(outputs) == 5 and all(str(p).startswith("checkpoints/ablations/") for p in outputs)
 
 
 def test_ablation_typos_fail_instead_of_running_the_baseline(tmp_path: Path) -> None:
@@ -171,7 +173,7 @@ def test_ablate_dry_run_trains_nothing(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(ablations, "run_ablations", lambda _: pytest.fail("trained"))
     result = CliRunner().invoke(app, ["ablate", "--dir", str(ABLATIONS), "--dry-run"])
     assert result.exit_code == 0, result.output
-    assert "4 ablation runs resolved; nothing was trained." in result.output
+    assert "5 ablation runs resolved; nothing was trained." in result.output
     assert "rewards.weights.entity_preservation: 1.0 -> 0.0" in result.output
 
 
@@ -264,6 +266,7 @@ def test_scan_handles_every_row_layout_and_groups_by_system() -> None:
     assert data["n_outputs"] == 4 and data["n_any_flagged"] == 3
     assert data["detectors"]["verbatim_copy"]["count"] == 1
     assert data["detectors"]["modality_flip"]["count"] >= 1
+    assert "condition_drop" in data["detectors"] and "condition_drop" in data["by_system"]["sft"]
     assert (
         data["by_system"]["grpo"]["verbatim_copy"] == 1
         and data["by_system"]["sft"]["n_outputs"] == 1
@@ -288,3 +291,42 @@ def test_detect_hacking_cli_writes_summary_and_flagged(tmp_path: Path) -> None:
     assert json.loads((out / "summary.json").read_text())["n_outputs"] == 2
     assert len((out / "flagged.jsonl").read_text().splitlines()) == 1
     assert scan_file(path, tmp_path / "again").n_any_flagged == 1
+
+
+TERMINATION = (
+    "The Licensee may terminate on 30 days' notice, unless the Licensor has cured the breach "
+    "within 10 days."
+)
+TERM_KEEPS = (
+    "The Licensee can end this agreement with 30 days' notice, but not if the Licensor fixes "
+    "the breach within 10 days."
+)
+TERM_DROPS = "The Licensee can end this agreement with 30 days' notice."
+
+
+def test_an_output_that_drops_an_exception_is_never_the_dpo_winner() -> None:
+    # Without the penalty the shorter, exception-free rewrite can win on reward ...
+    lenient = RewardConfig.model_validate({"format": {"condition_drop_penalty": 0.0}})
+    suite = RewardSuite(lenient, entailment=FakeNLI())
+    record = make_record(
+        "t", "k", TERMINATION, reference=TERM_KEEPS, reference_source="claude"
+    ).model_copy(update={"entities": ["the Licensee", "30 days", "the Licensor", "10 days"]})
+    drops, _ = suite.score(
+        [TERMINATION] * 2, [TERM_DROPS, TERM_KEEPS], [TERM_KEEPS] * 2, [record.entities] * 2
+    )
+    assert "condition_drop" in drops.problems
+    # ... but it is flagged, so it is never chosen.
+    pairs, _, _ = rank_pairs(
+        [record], [[TERM_DROPS, TERM_KEEPS]], suite, PairsConfig(min_margin=0.0), split="train"
+    )
+    assert all(p["chosen"][0]["content"] != TERM_DROPS for p in pairs)
+
+
+def test_detect_hacking_reports_dropped_conditions(tmp_path: Path) -> None:
+    path = tmp_path / "outputs.jsonl"
+    path.write_text(json.dumps({"clause": TERMINATION, "output": TERM_DROPS, "system": "grpo"}))
+    result = CliRunner().invoke(app, ["detect-hacking", "--outputs", str(path)])
+    assert result.exit_code == 0, result.output
+    assert "condition_drop: 1 (100.0%)" in result.output
+    flagged = json.loads((tmp_path / "outputs_hacking" / "flagged.jsonl").read_text())
+    assert "keeps 0 of 2" in flagged["detectors"]["condition_drop"]

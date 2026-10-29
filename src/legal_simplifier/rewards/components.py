@@ -8,6 +8,7 @@ tests avoid downloads.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Sequence
 from functools import lru_cache
 from typing import Any, Protocol, cast
@@ -18,6 +19,7 @@ from legal_simplifier.config import FormatConfig, SimplicityConfig
 from legal_simplifier.data.entities import entity_recall
 from legal_simplifier.rewards.hacking import (
     copy_overlap,
+    detect_condition_drop,
     detect_modality_flip,
     detect_truncation,
     detect_word_salad,
@@ -150,6 +152,70 @@ def get_nli_scorer(
     )
 
 
+# Split before a condition/exception that follows a comma, semicolon or colon, keeping
+# the marker with its part: "..., unless X" -> ["...", "unless X"].
+_PART_BREAK = re.compile(
+    r"(?<=[,;:])\s+(?=(?:unless|except|provided|subject\s+to|if|only\s+if|until|"
+    r"notwithstanding|in\s+the\s+event|so\s+long\s+as|as\s+long\s+as|but)\b)",
+    re.IGNORECASE,
+)
+_SENTENCE_BREAK = re.compile(r"(?<=[.!?;])\s+")
+
+
+def clause_parts(clause: str, *, max_parts: int = 8, min_words: int = 3) -> list[str]:
+    """Sentences and conditional parts of a clause, for sentence-level reverse NLI.
+
+    Very short pieces are merged into the previous part, and anything past
+    ``max_parts`` is merged into the last one, so the number of NLI calls per
+    clause is bounded.
+    """
+
+    pieces = [
+        p.strip(" ,;:")
+        for sentence in _SENTENCE_BREAK.split(" ".join(clause.split()))
+        for p in _PART_BREAK.split(sentence)
+    ]
+    parts: list[str] = []
+    for piece in pieces:
+        if not piece:
+            continue
+        if parts and (len(piece.split()) < min_words or len(parts) >= max_parts):
+            parts[-1] = f"{parts[-1]} {piece}"
+        else:
+            parts.append(piece)
+    if len(parts) > 1 and len(parts[0].split()) < min_words:
+        parts[1] = f"{parts[0]} {parts[1]}"
+        parts.pop(0)
+    return parts or [clause.strip()]
+
+
+def coverage_entailment(
+    clauses: Sequence[str],
+    outputs: Sequence[str],
+    scorer: EntailmentScorer,
+    *,
+    max_parts: int = 8,
+    min_words: int = 3,
+) -> list[float]:
+    """Mean P(entailment | output -> part) over each clause's parts, in one batched call."""
+
+    premises: list[str] = []
+    hypotheses: list[str] = []
+    owner: list[int] = []
+    for i, (clause, output) in enumerate(zip(clauses, outputs, strict=True)):
+        for part in clause_parts(clause, max_parts=max_parts, min_words=min_words):
+            premises.append(output)
+            hypotheses.append(part)
+            owner.append(i)
+    values = scorer.entailment(premises, hypotheses) if premises else []
+    totals = [0.0] * len(clauses)
+    counts = [0] * len(clauses)
+    for i, value in zip(owner, values, strict=True):
+        totals[i] += float(value)
+        counts[i] += 1
+    return [t / c if c else 0.0 for t, c in zip(totals, counts, strict=True)]
+
+
 def bertscore(
     predictions: Sequence[str], references: Sequence[str], scorer: SimilarityScorer
 ) -> list[float]:
@@ -231,4 +297,7 @@ def format_score(
     if detect_modality_flip(clause, prediction).flagged:
         penalty += config.modality_flip_penalty
         problems.append("modality_flip")
+    if detect_condition_drop(clause, prediction).flagged:
+        penalty += config.condition_drop_penalty
+        problems.append("condition_drop")
     return max(-1.0, -penalty), problems

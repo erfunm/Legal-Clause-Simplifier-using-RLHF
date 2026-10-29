@@ -6,6 +6,8 @@ import pytest
 
 from legal_simplifier.rewards.hacking import (
     DETECTORS,
+    conditions,
+    detect_condition_drop,
     detect_modality_flip,
     detect_truncation,
     detect_verbatim_copy,
@@ -158,3 +160,80 @@ def test_an_added_prohibition_is_a_flip() -> None:
 def test_shall_to_must_and_may_to_can_are_not_flips() -> None:
     assert not detect_modality_flip(CLAUSE, GOOD).flagged
     assert not detect_modality_flip(CLAUSE, "Nothing modal here.").flagged  # truncation's job
+
+
+# --- dropped conditions and exceptions ---------------------------------------------------
+
+TERMINATION = (
+    "The Licensee may terminate on 30 days' notice, unless the Licensor has cured the breach "
+    "within 10 days."
+)
+DROPPED = "The Licensee can end this agreement with 30 days' notice."
+
+
+def test_the_dropped_exception_passes_every_other_check() -> None:
+    # The gap this detector closes: the same permission and a shorter text, so truncation,
+    # modality_flip and word_salad stay silent. (Entity recall drops to 0.5 here only because
+    # the exception names "10 days" and "the Licensor"; test_rewards has one that does not.)
+    entities = ["the Licensee", "30 days", "the Licensor", "10 days"]
+    others = {
+        k: f
+        for k, f in run_detectors(TERMINATION, DROPPED, entities).items()
+        if k != "condition_drop"
+    }
+    assert not any(f.flagged for f in others.values())
+
+
+def test_a_dropped_exception_is_flagged() -> None:
+    finding = detect_condition_drop(TERMINATION, DROPPED)
+    assert finding.flagged
+    assert (
+        finding.detail
+        == "keeps 0 of 2 conditions/exceptions (clause: unless, within; output: none)"
+    )
+
+
+@pytest.mark.parametrize(
+    "rewrite",
+    [
+        "The Licensee can end this agreement with 30 days' notice, unless the Licensor fixes the "
+        "breach within 10 days.",
+        "The Licensee can end this agreement with 30 days' notice, but not if the Licensor fixes "
+        "the breach within 10 days.",
+        "The Licensee can end this agreement with 30 days' notice. It cannot do this if the "
+        "Licensor fixes the breach in ten days.",
+    ],
+)
+def test_a_rewrite_that_keeps_the_exception_is_not_flagged(rewrite: str) -> None:
+    assert not detect_condition_drop(TERMINATION, rewrite).flagged
+
+
+def test_dropping_only_the_time_limit_is_flagged() -> None:
+    finding = detect_condition_drop(
+        TERMINATION,
+        "The Licensee can end this agreement on notice, unless the Licensor fixes the breach.",
+    )
+    assert finding.flagged and "keeps 1 of 2" in finding.detail
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("provided, however, that the fee is paid", ["provided, however, that"]),
+        ("subject to Section 5 and notwithstanding Section 6", ["subject to", "notwithstanding"]),
+        ("only if paid, but not if late, except as agreed", ["only if", "but not if", "except as"]),
+        ("in the event of a default or in case of delay", ["in the event of", "in case"]),
+        (
+            "until paid, no later than March 1, in 30 business days",
+            ["until", "no later than", "in 30 business days"],
+        ),
+        ("as long as it pays when due", ["as long as", "when"]),
+        ("The Buyer pays the price.", []),
+    ],
+)
+def test_condition_markers_count_once_each_longest_first(text: str, expected: list[str]) -> None:
+    assert conditions(text) == expected
+
+
+def test_empty_output_is_left_to_the_format_reward() -> None:
+    assert not detect_condition_drop(TERMINATION, "").flagged

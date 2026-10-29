@@ -5,9 +5,12 @@ from collections.abc import Sequence
 import pytest
 
 from legal_simplifier.config import FormatConfig, RewardConfig, RewardWeights, SimplicityConfig
+from legal_simplifier.data.entities import extract_entities
 from legal_simplifier.rewards import components
 from legal_simplifier.rewards.components import (
     bertscore,
+    clause_parts,
+    coverage_entailment,
     entity_preservation_score,
     fkgl,
     fkgl_band_score,
@@ -201,6 +204,7 @@ def test_format_is_zero_for_a_clean_rewrite() -> None:
         ("The Licensee pays. It is quarterly.", "truncation"),
         ("the Licensee the Licensor 5% Net Sales 30 days the Software.", "word_salad"),
         (GOOD.replace("must not sublicense", "may sublicense"), "modality_flip"),
+        (GOOD.replace("within 30 days after", "after"), "condition_drop"),
     ],
 )
 def test_format_penalises_each_problem(output: str, problem: str) -> None:
@@ -308,3 +312,132 @@ def test_completion_text_handles_messages_and_think_blocks() -> None:
         )
         == "You must pay."
     )
+
+
+# --- dropped exceptions: the detector and the coverage variant ------------------------------
+
+TERMINATION = (
+    "The Licensee may terminate on 30 days' notice, unless the Licensor has cured the breach "
+    "within 10 days."
+)
+KEEPS = (
+    "The Licensee can end this agreement with 30 days' notice, but not if the Licensor fixes "
+    "the breach within 10 days."
+)
+DROPS = "The Licensee can end this agreement with 30 days' notice."
+
+
+class BlindNLI:
+    """One-way NLI as the gap sees it: a rewrite that only drops content is fully entailed."""
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[list[str], list[str]]] = []
+
+    def entailment(self, premises: Sequence[str], hypotheses: Sequence[str]) -> list[float]:
+        self.calls.append((list(premises), list(hypotheses)))
+        return [1.0] * len(premises)
+
+
+class ContentNLI:
+    """Entailed when the hypothesis's content words all appear in the premise."""
+
+    STOP = frozenset(
+        [
+            "the",
+            "a",
+            "an",
+            "of",
+            "on",
+            "to",
+            "in",
+            "has",
+            "have",
+            "can",
+            "may",
+            "with",
+            "this",
+            "agreement",
+            "be",
+        ]
+    )
+
+    def entailment(self, premises: Sequence[str], hypotheses: Sequence[str]) -> list[float]:
+        out = []
+        for p, h in zip(premises, hypotheses, strict=True):
+            words = {w for w in tokenize(h) if w not in self.STOP}
+            premise = set(tokenize(p))
+            out.append(sum(w in premise for w in words) / len(words) if words else 1.0)
+        return out
+
+
+def test_dropping_the_exception_no_longer_pays() -> None:
+    # An exception with no entities of its own: in TERMINATION the "10 days" and "Licensor"
+    # at least cost entity recall; here nothing else notices it is gone.
+    clause = (
+        "The Licensee may terminate this Agreement on 30 days' notice, unless the breach has "
+        "been cured."
+    )
+    keeps_text = (
+        "The Licensee can end this agreement with 30 days' notice, but not if the breach has "
+        "been fixed."
+    )
+    entities = extract_entities(clause)
+    suite = RewardSuite(RewardConfig(), entailment=BlindNLI())
+    keeps, drops = suite.score([clause] * 2, [keeps_text, DROPS], [keeps_text] * 2, [entities] * 2)
+    # One-way NLI and entity recall cannot tell them apart ...
+    assert keeps.meaning == drops.meaning == 1.0
+    assert keeps.entity_preservation == drops.entity_preservation == 1.0
+    # ... the condition_drop penalty can.
+    assert drops.problems == ("condition_drop",) and drops.format == -0.5
+    assert keeps.problems == () and keeps.format == 0.0
+    assert keeps.total > drops.total
+
+
+def test_clause_parts_split_sentences_and_conditional_parts() -> None:
+    assert clause_parts(TERMINATION) == [
+        "The Licensee may terminate on 30 days' notice",
+        "unless the Licensor has cured the breach within 10 days.",
+    ]
+    proviso = (
+        "Each party shall keep the terms confidential; provided, however, that either party may "
+        "disclose them to its advisors, if they are bound by confidentiality."
+    )
+    assert clause_parts(proviso) == [
+        "Each party shall keep the terms confidential",
+        "provided, however, that either party may disclose them to its advisors",
+        "if they are bound by confidentiality.",
+    ]
+    assert clause_parts("Notwithstanding Section 5, the Buyer shall pay.") == [
+        "Notwithstanding Section 5, the Buyer shall pay."
+    ]
+    long = ". ".join(f"Sentence number {i} has words" for i in range(12)) + "."
+    assert len(clause_parts(long, max_parts=8)) == 8
+
+
+def test_coverage_scores_each_part_given_the_output_in_one_call() -> None:
+    nli = BlindNLI()
+    coverage_entailment([TERMINATION, "A b c d. E f g h."], [KEEPS, "x"], nli)
+    assert len(nli.calls) == 1
+    premises, hypotheses = nli.calls[0]
+    assert premises == [KEEPS, KEEPS, "x", "x"]  # premise = the output (reverse direction)
+    assert hypotheses[1].startswith("unless the Licensor")
+
+
+def test_nli_coverage_meaning_penalises_the_dropped_exception() -> None:
+    config = RewardConfig.model_validate({"meaning": {"method": "nli_coverage"}})
+    keeps, drops = RewardSuite(config, entailment=ContentNLI()).meaning(
+        [TERMINATION] * 2, [KEEPS, DROPS], [KEEPS] * 2
+    )
+    assert drops < keeps
+    parts = clause_parts(TERMINATION)
+    assert drops == pytest.approx(sum(ContentNLI().entailment([DROPS] * 2, parts)) / 2)
+    assert (
+        ContentNLI().entailment([DROPS], parts[1:])[0]
+        < ContentNLI().entailment([KEEPS], parts[1:])[0]
+    )
+    forward = RewardSuite(RewardConfig(), entailment=BlindNLI()).meaning(
+        [TERMINATION] * 2, [KEEPS, DROPS], [KEEPS] * 2
+    )
+    assert forward[0] == forward[1]  # the default direction cannot see the difference
+    with pytest.raises(ValueError):
+        RewardConfig.model_validate({"meaning": {"method": "reverse"}})
