@@ -1,27 +1,37 @@
-"""Composite reward: meaning (BERTScore) + simplicity (SARI, readability) - missing entities.
+"""Scoring building blocks: BERTScore, NLI entailment, SARI, reading grade, entities, format.
 
-All scoring functions are batched. The BERTScore model is loaded once per
-process and reused, because reloading ``roberta-large`` per call made the old
-reward unusable inside an RL loop. Any object with a compatible ``score``
-method can be passed instead, which is how the tests avoid downloading it.
+Model-based scorers are batched and loaded once per process (reloading
+``roberta-large`` per call made the old reward unusable inside an RL loop).
+Anything with a compatible method can be passed instead, which is how the
+tests avoid downloads.
 """
 
 from __future__ import annotations
 
 from collections.abc import Sequence
-from dataclasses import asdict, dataclass
 from functools import lru_cache
 from typing import Any, Protocol, cast
 
 import textstat
 
-from legal_simplifier.config import RewardConfig
-from legal_simplifier.data.entities import check_entity_presence
+from legal_simplifier.config import FormatConfig, SimplicityConfig
+from legal_simplifier.data.entities import entity_recall
+from legal_simplifier.rewards.hacking import (
+    copy_overlap,
+    detect_modality_flip,
+    detect_truncation,
+    detect_word_salad,
+    tokens,
+)
 from legal_simplifier.rewards.sari import sentence_sari
 
 
 class SimilarityScorer(Protocol):
     def score(self, predictions: Sequence[str], references: Sequence[str]) -> list[float]: ...
+
+
+class EntailmentScorer(Protocol):
+    def entailment(self, premises: Sequence[str], hypotheses: Sequence[str]) -> list[float]: ...
 
 
 class BertScoreScorer:
@@ -60,6 +70,86 @@ def get_bertscore_scorer(
     )
 
 
+class NLIScorer:
+    """P(entailment) from an NLI cross-encoder, premise = clause, hypothesis = output.
+
+    Long clauses are truncated from the premise only (``only_first``), so the
+    output being judged is always seen in full.
+    """
+
+    def __init__(
+        self,
+        model: str,
+        *,
+        revision: str | None = None,
+        entailment_label: str | None = None,
+        max_length: int = 512,
+        batch_size: int = 32,
+        device: str | None = None,
+    ):
+        import torch
+        from transformers import AutoModelForSequenceClassification, AutoTokenizer
+
+        self.tokenizer = AutoTokenizer.from_pretrained(model, revision=revision)
+        self.model = AutoModelForSequenceClassification.from_pretrained(model, revision=revision)
+        self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
+        self.model.to(self.device).eval()  # pyright: ignore[reportArgumentType]
+        self.max_length = max_length
+        self.batch_size = batch_size
+        labels = {str(v).lower(): int(k) for k, v in self.model.config.id2label.items()}
+        if entailment_label is not None:
+            if entailment_label.lower() not in labels:
+                raise ValueError(
+                    f"{model} has no label {entailment_label!r}; labels: {sorted(labels)}"
+                )
+            self.entailment_index = labels[entailment_label.lower()]
+        else:
+            matches = [i for name, i in labels.items() if "entail" in name]
+            if len(matches) != 1:
+                raise ValueError(
+                    f"cannot find the entailment label of {model} ({sorted(labels)}); "
+                    "set meaning.entailment_label"
+                )
+            self.entailment_index = matches[0]
+
+    def entailment(self, premises: Sequence[str], hypotheses: Sequence[str]) -> list[float]:
+        import torch
+
+        if len(premises) != len(hypotheses):
+            raise ValueError("premises and hypotheses must have the same length")
+        scores: list[float] = []
+        for start in range(0, len(premises), self.batch_size):
+            batch = self.tokenizer(
+                list(premises[start : start + self.batch_size]),
+                list(hypotheses[start : start + self.batch_size]),
+                truncation="only_first",
+                max_length=self.max_length,
+                padding=True,
+                return_tensors="pt",
+            ).to(self.device)
+            with torch.inference_mode():
+                probs = self.model(**batch).logits.float().softmax(dim=-1)
+            scores.extend(probs[:, self.entailment_index].tolist())
+        return scores
+
+
+@lru_cache(maxsize=2)
+def get_nli_scorer(
+    model: str,
+    revision: str | None = None,
+    entailment_label: str | None = None,
+    max_length: int = 512,
+    batch_size: int = 32,
+) -> NLIScorer:
+    return NLIScorer(
+        model,
+        revision=revision,
+        entailment_label=entailment_label,
+        max_length=max_length,
+        batch_size=batch_size,
+    )
+
+
 def bertscore(
     predictions: Sequence[str], references: Sequence[str], scorer: SimilarityScorer
 ) -> list[float]:
@@ -76,97 +166,69 @@ def sari(
     ]
 
 
-def readability_bonus(prediction: str, *, target_grade: float = 8.0) -> float:
-    """Return a bonus in [0, 1] that grows as FKGL drops below ``target_grade``.
+def fkgl(text: str) -> float:
+    return float(textstat.flesch_kincaid_grade(text))  # pyright: ignore[reportAttributeAccessIssue]
 
-    Empty output scores 0. (The old version gave it the full bonus because
-    textstat reports FKGL 0 for an empty string.)
+
+def fkgl_band_score(prediction: str, config: SimplicityConfig) -> float:
+    """1 inside [fkgl_low, fkgl_high], falling linearly to 0 over ``fkgl_margin`` either side.
+
+    The lower edge matters: without it, the cheapest way to a low grade is a
+    string of two-word sentences. Empty output scores 0 (textstat reports FKGL
+    0 for an empty string, which the old bonus rewarded).
     """
 
     if not prediction.strip():
         return 0.0
-    fkgl = float(textstat.flesch_kincaid_grade(prediction))  # pyright: ignore[reportAttributeAccessIssue]
-    return min(1.0, max(0.0, (target_grade - fkgl) / target_grade))
+    grade = fkgl(prediction)
+    if grade < config.fkgl_low:
+        distance = config.fkgl_low - grade
+    elif grade > config.fkgl_high:
+        distance = grade - config.fkgl_high
+    else:
+        return 1.0
+    return max(0.0, 1.0 - distance / config.fkgl_margin)
 
 
-def entity_penalty(
-    entities: Sequence[str], prediction: str, *, missing_penalty: float = 1.0
+def simplicity_score(
+    clause: str, prediction: str, reference: str, config: SimplicityConfig
 ) -> float:
-    """``missing_penalty`` times the fraction of ``entities`` missing from ``prediction``."""
-
-    presence = check_entity_presence(entities, prediction)
-    if not presence:
-        return 0.0
-    missing = sum(1 for kept in presence.values() if not kept)
-    return missing_penalty * missing / len(presence)
-
-
-@dataclass(frozen=True)
-class RewardBreakdown:
-    bertscore: float
-    sari: float
-    readability: float
-    entity_penalty: float
-    total: float
-
-    def to_dict(self) -> dict[str, float]:
-        return asdict(self)
+    if config.method == "sari":
+        return sentence_sari(clause, prediction, [reference])
+    band = fkgl_band_score(prediction, config)
+    if config.method == "fkgl_band":
+        return band
+    return (sentence_sari(clause, prediction, [reference]) + band) / 2
 
 
-def combine(
-    *,
-    bertscore: float,
-    sari: float,
-    readability: float,
-    entity_penalty: float,
-    config: RewardConfig,
-) -> float:
-    w = config.weights
-    raw = (
-        w.bertscore * bertscore
-        + w.sari * sari
-        + w.readability * readability
-        - w.entity_penalty * entity_penalty
-    )
-    return min(config.clip_max, max(config.clip_min, raw))
+def entity_preservation_score(entities: Sequence[str], prediction: str) -> float:
+    """Fraction of required entities present after normalisation; 1 when there are none."""
+
+    return entity_recall(entities, prediction)
 
 
-def composite_rewards(
-    *,
-    clauses: Sequence[str],
-    predictions: Sequence[str],
-    references: Sequence[str],
-    entities: Sequence[Sequence[str]],
-    config: RewardConfig,
-    scorer: SimilarityScorer | None = None,
-) -> list[RewardBreakdown]:
-    """Score a batch of predictions and return the per-component breakdown for each."""
+def format_score(
+    clause: str, prediction: str, entities: Sequence[str], config: FormatConfig
+) -> tuple[float, list[str]]:
+    """A penalty in [-1, 0] and the names of the problems found (empty when clean)."""
 
-    n = len(predictions)
-    if not (len(clauses) == len(references) == len(entities) == n):
-        raise ValueError("clauses, predictions, references and entities must have the same length")
-    if scorer is None:
-        scorer = get_bertscore_scorer(
-            config.bertscore_model,
-            config.bertscore_rescale_with_baseline,
-            config.bertscore_batch_size,
-        )
-    bert = bertscore(predictions, references, scorer)
-    sari_scores = sari(clauses, predictions, references)
-    results: list[RewardBreakdown] = []
-    for i in range(n):
-        readability = readability_bonus(
-            predictions[i], target_grade=config.readability_target_grade
-        )
-        penalty = entity_penalty(
-            entities[i], predictions[i], missing_penalty=config.missing_entity_penalty
-        )
-        total = combine(
-            bertscore=bert[i],
-            sari=sari_scores[i],
-            readability=readability,
-            entity_penalty=penalty,
-            config=config,
-        )
-        results.append(RewardBreakdown(bert[i], sari_scores[i], readability, penalty, total))
-    return results
+    if not prediction.strip():
+        return -1.0, ["empty"]
+    penalty = 0.0
+    problems: list[str] = []
+    if copy_overlap(clause, prediction) >= config.copy_threshold:
+        penalty += config.copy_penalty
+        problems.append("verbatim_copy")
+    if len(tokens(prediction)) > config.max_length_ratio * max(1, len(tokens(clause))):
+        penalty += config.runaway_penalty
+        problems.append("runaway_length")
+    if detect_truncation(clause, prediction).flagged:
+        penalty += config.truncation_penalty
+        problems.append("truncation")
+    if detect_word_salad(prediction, entities).flagged:
+        penalty += config.word_salad_penalty
+        problems.append("word_salad")
+    if detect_modality_flip(clause, prediction).flagged:
+        penalty += config.modality_flip_penalty
+        problems.append("modality_flip")
+    return max(-1.0, -penalty), problems

@@ -3,8 +3,8 @@
 Extraction is regex-based by default so it is deterministic and testable; spaCy
 NER can be layered on top (``use_spacy=True``, needs the ``nlp`` extra and an
 installed English model). Matching is done on a normalised form so harmless
-reformatting ("USD 1,000" vs "$1000", "thirty (30) days" vs "30 days") still
-counts as preserved.
+reformatting ("USD 1,000" vs "$1000", "thirty (30) days" vs "30 days",
+"$1,000,000" vs "$1 million" vs "one million dollars") still counts as preserved.
 """
 
 from __future__ import annotations
@@ -223,6 +223,103 @@ def dedupe_entities(entities: Iterable[str]) -> list[str]:
 
 _NUMBER_WORD_WITH_DIGITS = re.compile(r"\b[a-z]+(?:-[a-z]+)?\s*\((\d+)\)")
 
+_UNITS = {
+    w: i
+    for i, w in enumerate(
+        [
+            "zero",
+            "one",
+            "two",
+            "three",
+            "four",
+            "five",
+            "six",
+            "seven",
+            "eight",
+            "nine",
+            "ten",
+            "eleven",
+            "twelve",
+            "thirteen",
+            "fourteen",
+            "fifteen",
+            "sixteen",
+            "seventeen",
+            "eighteen",
+            "nineteen",
+        ]
+    )
+}
+_TENS = {
+    w: 10 * i
+    for i, w in enumerate(
+        ["twenty", "thirty", "forty", "fifty", "sixty", "seventy", "eighty", "ninety"], 2
+    )
+}
+_SCALES = {"thousand": 1_000, "million": 1_000_000, "billion": 1_000_000_000}
+_WORD_OR_GAP = re.compile(r"[a-z]+|[\s-]+|[^a-z\s-]+")
+
+
+def _number_words_value(words: list[str]) -> int:
+    total, current = 0, 0
+    for word in words:
+        if word in _UNITS:
+            current += _UNITS[word]
+        elif word in _TENS:
+            current += _TENS[word]
+        elif word == "hundred":
+            current = max(current, 1) * 100
+        else:
+            total += max(current, 1) * _SCALES[word]
+            current = 0
+    return total + current
+
+
+def _replace_number_words(text: str) -> str:
+    """ "twenty-five" -> "25", "one hundred and twenty" -> "120", "two million" -> "2000000".
+
+    A run must start with a unit or tens word, so a scale word after digits
+    ("1.5 million") is left for the scale step.
+    """
+
+    out: list[str] = []
+    run: list[str] = []
+    pending_gap = ""
+
+    def flush() -> None:
+        nonlocal pending_gap
+        if run:
+            out.append(str(_number_words_value(run)))
+            run.clear()
+        out.append(pending_gap)
+        pending_gap = ""
+
+    for token in _WORD_OR_GAP.findall(text):
+        is_word = token[0].isalpha()
+        if is_word and (token in _UNITS or token in _TENS) and (not run or run[-1] not in _UNITS):
+            if not run:
+                flush()
+            run.append(token)
+        elif is_word and run and (token == "hundred" or token in _SCALES):
+            run.append(token)
+        elif is_word and run and token == "and" and run[-1] == "hundred":
+            continue
+        elif not is_word and run and token.strip(" -") == "":
+            pending_gap = token
+            continue
+        else:
+            flush()
+            out.append(token)
+            continue
+        pending_gap = ""
+    flush()
+    return "".join(out)
+
+
+def _apply_scale(match: re.Match[str]) -> str:
+    value = float(match.group(2)) * _SCALES[match.group(3)]
+    return f"{match.group(1)}{int(value) if value.is_integer() else value}"
+
 
 def normalise_for_match(text: str) -> str:
     """Canonicalise formatting so equivalent spellings of an entity compare equal."""
@@ -235,6 +332,9 @@ def normalise_for_match(text: str) -> str:
     text = re.sub(r"\b(?:us\$|usd)\s?", "$", text)
     text = re.sub(r"\$\s+", "$", text)
     text = re.sub(r"(?<=\d),(?=\d{3}\b)", "", text)
+    text = _replace_number_words(text)
+    text = re.sub(r"(\$?)(\d+(?:\.\d+)?)\s+(thousand|million|billion)\b", _apply_scale, text)
+    text = re.sub(r"(?<![$\d.])(\d+(?:\.\d+)?)\s+(?:us\s+)?dollars?\b", r"$\1", text)
     text = re.sub(r"(\d)(?:st|nd|rd|th)\b", r"\1", text)
     text = re.sub(r"\s?percent\b", "%", text)
     text = re.sub(r"\s+%", "%", text)

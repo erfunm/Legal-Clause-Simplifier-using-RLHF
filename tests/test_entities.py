@@ -118,6 +118,13 @@ def test_dedupe_uses_normalised_form() -> None:
         ("5 percent", "5%"),
         ("January 1st, 2020", "january 1 2020"),
         ("“Supplier”", '"supplier"'),
+        ("$1,000,000", "one million dollars"),
+        ("$1,000,000", "$1 million"),
+        ("$1,500,000", "$1.5 million"),
+        ("USD 2,500,000,000", "$2.5 billion"),
+        ("twenty-five (25) days", "twenty-five days"),
+        ("120 days", "one hundred and twenty days"),
+        ("$250,000", "250 thousand dollars"),
     ],
 )
 def test_normalisation_equates_formatting_variants(left: str, right: str) -> None:
@@ -128,6 +135,11 @@ def test_presence_tolerates_reformatting() -> None:
     entities = ["USD 1,000,000", "thirty (30) days", "Acme Widgets, Inc."]
     output = "Acme Widgets Inc. must pay $1,000,000 within 30 days."
     assert check_entity_presence(entities, output) == dict.fromkeys(entities, True)
+
+
+def test_number_words_do_not_merge_separate_numbers() -> None:
+    assert normalise_for_match("thirty days and sixty days") == "30 days and 60 days"
+    assert normalise_for_match("Section 12, sixty days") == "section 12 60 days"
 
 
 def test_presence_requires_whole_token_match() -> None:

@@ -4,17 +4,19 @@ from collections.abc import Sequence
 
 import pytest
 
-from legal_simplifier.config import RewardConfig, RewardWeights
+from legal_simplifier.config import FormatConfig, RewardConfig, RewardWeights, SimplicityConfig
 from legal_simplifier.rewards import components
 from legal_simplifier.rewards.components import (
     bertscore,
-    combine,
-    composite_rewards,
-    entity_penalty,
-    readability_bonus,
+    entity_preservation_score,
+    fkgl,
+    fkgl_band_score,
+    format_score,
     sari,
+    simplicity_score,
 )
 from legal_simplifier.rewards.sari import sentence_sari, tokenize
+from legal_simplifier.rewards.suite import REWARD_NAMES, RewardSuite, completion_text
 
 
 class FakeScorer:
@@ -80,44 +82,6 @@ def test_batched_sari_matches_sentence_sari() -> None:
     ]
 
 
-# --- readability ------------------------------------------------------------
-
-
-def test_readability_rewards_plain_text_over_legalese() -> None:
-    plain = "You must pay the rent on time. If you do not, we can end the lease."
-    legalese = (
-        "Notwithstanding any provision hereof to the contrary, the obligations of the lessee "
-        "hereunder shall constitute independent covenants enforceable irrespective of any "
-        "counterclaim, recoupment, defence or other right which the lessee may possess."
-    )
-    assert readability_bonus(plain) > readability_bonus(legalese)
-    assert readability_bonus(legalese) == 0.0
-
-
-def test_readability_gives_empty_output_no_bonus() -> None:
-    # Regression: textstat reports FKGL 0 for "", which used to earn the maximum bonus.
-    assert readability_bonus("") == 0.0
-    assert readability_bonus("   \n") == 0.0
-
-
-def test_readability_is_capped_at_one() -> None:
-    assert readability_bonus("Go. Run. Eat.") <= 1.0
-
-
-# --- entities -----------------------------------------------------------------
-
-
-def test_entity_penalty_scales_with_fraction_missing() -> None:
-    entities = ["$100", "Acme Inc.", "30 days", "Territory"]
-    assert entity_penalty(entities, "Acme Inc. pays $100 within 30 days in the Territory.") == 0.0
-    assert entity_penalty(entities, "Acme Inc. pays $100.") == pytest.approx(0.5)
-    assert entity_penalty(entities, "", missing_penalty=2.0) == pytest.approx(2.0)
-
-
-def test_entity_penalty_is_zero_without_entities() -> None:
-    assert entity_penalty([], "anything") == 0.0
-
-
 # --- BERTScore wrapper ---------------------------------------------------------
 
 
@@ -152,58 +116,195 @@ def test_bertscore_model_is_loaded_once(monkeypatch: pytest.MonkeyPatch) -> None
     assert created == ["roberta-large"]
 
 
-# --- composite -----------------------------------------------------------------
+# --- simplicity -------------------------------------------------------------
+
+PLAIN = (  # FKGL about 6.8: inside the default grade band
+    "The Licensee must pay the Licensor 5% of Net Sales within 30 days after each quarter ends. "
+    "The Licensee must not sublicense the Software."
+)
+LEGALESE = (
+    "Notwithstanding any provision hereof to the contrary, the obligations of the lessee "
+    "hereunder shall constitute independent covenants enforceable irrespective of any "
+    "counterclaim, recoupment, defence or other right which the lessee may possess."
+)
 
 
-def test_combine_uses_config_weights_and_clips() -> None:
-    config = RewardConfig(
-        weights=RewardWeights(bertscore=1, sari=1, readability=1, entity_penalty=2)
+def test_fkgl_band_rewards_plain_text_over_legalese() -> None:
+    band = SimplicityConfig()
+    assert fkgl_band_score(PLAIN, band) > fkgl_band_score(LEGALESE, band)
+    assert fkgl_band_score(LEGALESE, band) == 0.0
+
+
+def test_fkgl_band_does_not_reward_choppy_text_below_the_band() -> None:
+    # The cheapest low grade is a string of two-word sentences; the lower edge stops that paying.
+    band = SimplicityConfig(fkgl_low=5, fkgl_high=9, fkgl_margin=4)
+    choppy = "Pay rent. Pay now. Do it. End it."
+    assert fkgl(choppy) < band.fkgl_low
+    assert fkgl_band_score(choppy, band) < fkgl_band_score(PLAIN, band)
+
+
+def test_fkgl_band_gives_empty_output_nothing() -> None:
+    # Regression: textstat reports FKGL 0 for "", which the old bonus rewarded.
+    assert fkgl_band_score("", SimplicityConfig()) == 0.0
+    assert fkgl_band_score("   \n", SimplicityConfig()) == 0.0
+
+
+def test_simplicity_methods() -> None:
+    clause, ref = LEGALESE, PLAIN
+    s = sentence_sari(clause, PLAIN, [ref])
+    b = fkgl_band_score(PLAIN, SimplicityConfig())
+    assert simplicity_score(clause, PLAIN, ref, SimplicityConfig(method="sari")) == s
+    assert simplicity_score(clause, PLAIN, ref, SimplicityConfig(method="fkgl_band")) == b
+    assert simplicity_score(clause, PLAIN, ref, SimplicityConfig(method="both")) == pytest.approx(
+        (s + b) / 2
     )
-    value = combine(bertscore=0.5, sari=0.25, readability=0.25, entity_penalty=0.1, config=config)
-    assert value == pytest.approx(0.8)
-    assert (
-        combine(bertscore=1, sari=1, readability=1, entity_penalty=0, config=config)
-        == config.clip_max
-    )
-    assert (
-        combine(bertscore=0, sari=0, readability=0, entity_penalty=5, config=config)
-        == config.clip_min
-    )
-
-
-def test_reward_config_rejects_inverted_clip() -> None:
     with pytest.raises(ValueError):
-        RewardConfig(clip_min=1.0, clip_max=0.0)
+        SimplicityConfig(fkgl_low=9, fkgl_high=5)
 
 
-def test_composite_rewards_breakdown_and_ordering() -> None:
-    clause = "The Licensee shall remit $5,000 to Acme Inc. within thirty (30) days of the Effective Date."
-    entities = ["Licensee", "$5,000", "Acme Inc.", "thirty (30) days", "Effective Date"]
-    reference = "The Licensee must pay Acme Inc. $5,000 within 30 days of the Effective Date."
-    predictions = [reference, "The Licensee must pay some money.", ""]
-    results = composite_rewards(
-        clauses=[clause] * 3,
-        predictions=predictions,
-        references=[reference] * 3,
-        entities=[entities] * 3,
-        config=RewardConfig(),
-        scorer=FakeScorer(),
-    )
-    good, lossy, empty = results
-    assert good.entity_penalty == 0.0
-    assert lossy.entity_penalty > 0.0
-    assert empty.readability == 0.0
-    assert good.total > lossy.total > empty.total
-    assert set(good.to_dict()) == {"bertscore", "sari", "readability", "entity_penalty", "total"}
+# --- entities and format -----------------------------------------------------------
 
 
-def test_composite_rewards_rejects_mismatched_batches() -> None:
-    with pytest.raises(ValueError):
-        composite_rewards(
-            clauses=["a"],
-            predictions=["a", "b"],
-            references=["a"],
-            entities=[[]],
-            config=RewardConfig(),
-            scorer=FakeScorer(),
+def test_entity_preservation_is_the_normalised_recall() -> None:
+    entities = ["$1,000,000", "Acme Inc.", "thirty (30) days", "Territory"]
+    assert (
+        entity_preservation_score(
+            entities, "Acme Inc. pays one million dollars within 30 days in the Territory."
         )
+        == 1.0
+    )
+    assert entity_preservation_score(entities, "Acme Inc. pays $1 million.") == pytest.approx(0.5)
+    assert entity_preservation_score([], "anything") == 1.0
+
+
+CLAUSE = (
+    "The Licensee shall pay the Licensor a royalty of 5% of Net Sales within thirty (30) days "
+    "after the end of each quarter and shall not sublicense the Software."
+)
+GOOD = (
+    "The Licensee must pay the Licensor 5% of Net Sales within 30 days after each quarter ends. "
+    "The Licensee must not sublicense the Software."
+)
+ENTITIES = ["the Licensee", "the Licensor", "5%", "Net Sales", "thirty (30) days", "the Software"]
+
+
+def test_format_is_zero_for_a_clean_rewrite() -> None:
+    assert format_score(CLAUSE, GOOD, ENTITIES, FormatConfig()) == (0.0, [])
+
+
+@pytest.mark.parametrize(
+    ("output", "problem"),
+    [
+        ("", "empty"),
+        (CLAUSE, "verbatim_copy"),
+        (GOOD + " " + " ".join([GOOD] * 2), "runaway_length"),
+        ("The Licensee pays. It is quarterly.", "truncation"),
+        ("the Licensee the Licensor 5% Net Sales 30 days the Software.", "word_salad"),
+        (GOOD.replace("must not sublicense", "may sublicense"), "modality_flip"),
+    ],
+)
+def test_format_penalises_each_problem(output: str, problem: str) -> None:
+    value, problems = format_score(CLAUSE, output, ENTITIES, FormatConfig())
+    assert problem in problems
+    assert -1.0 <= value < 0.0
+
+
+def test_format_penalties_are_configurable_and_clipped() -> None:
+    lenient = FormatConfig(modality_flip_penalty=0.0)
+    flipped = GOOD.replace("must not sublicense", "may sublicense")
+    assert format_score(CLAUSE, flipped, ENTITIES, lenient)[0] == 0.0
+    harsh = FormatConfig(copy_penalty=5.0)
+    assert format_score(CLAUSE, CLAUSE, ENTITIES, harsh)[0] == -1.0
+
+
+# --- the suite -------------------------------------------------------------------
+
+
+class FakeNLI:
+    """Entailment = share of output words found in the clause; records batch sizes."""
+
+    def __init__(self) -> None:
+        self.calls: list[int] = []
+
+    def entailment(self, premises: Sequence[str], hypotheses: Sequence[str]) -> list[float]:
+        self.calls.append(len(premises))
+        out = []
+        for p, h in zip(premises, hypotheses, strict=True):
+            words = set(tokenize(h))
+            out.append(len(words & set(tokenize(p))) / len(words) if words else 0.0)
+        return out
+
+
+def test_suite_scores_a_good_rewrite_above_hacks() -> None:
+    nli = FakeNLI()
+    suite = RewardSuite(RewardConfig(), entailment=nli)
+    outputs = [GOOD, CLAUSE, "", "The Licensee pays. It is quarterly."]
+    n = len(outputs)
+    results = suite.score([CLAUSE] * n, outputs, [GOOD] * n, [ENTITIES] * n)
+    good, copy, empty, truncated = results
+    assert good.total > max(copy.total, empty.total, truncated.total)
+    assert empty.meaning == 0.0 and empty.format == -1.0
+    assert "verbatim_copy" in copy.problems
+    assert nli.calls == [n - 1]  # one batch, empty output skipped
+    assert set(good.to_dict()) == {*REWARD_NAMES, "total", "problems"}
+
+
+def test_suite_weights_and_zero_weight_ablation() -> None:
+    weights = RewardWeights(meaning=0, simplicity=0, entity_preservation=0, format=1)
+    suite = RewardSuite(RewardConfig(weights=weights), entailment=FakeNLI())
+    (r,) = suite.score([CLAUSE], [GOOD], [GOOD], [ENTITIES])
+    assert r.total == r.format == 0.0
+    off = RewardSuite(
+        RewardConfig(weights=RewardWeights(entity_preservation=0)), entailment=FakeNLI()
+    )
+    (with_entities,) = RewardSuite(RewardConfig(), entailment=FakeNLI()).score(
+        [CLAUSE], [GOOD], [GOOD], [ENTITIES]
+    )
+    (without,) = off.score([CLAUSE], [GOOD], [GOOD], [ENTITIES])
+    assert with_entities.total - without.total == pytest.approx(with_entities.entity_preservation)
+    assert without.entity_preservation == with_entities.entity_preservation  # still computed
+
+
+def test_meaning_can_use_bertscore_against_the_reference() -> None:
+    scorer = FakeScorer()
+    suite = RewardSuite(
+        RewardConfig.model_validate({"meaning": {"method": "bertscore"}}), similarity=scorer
+    )
+    assert suite.meaning([CLAUSE, CLAUSE], [GOOD, ""], [GOOD, GOOD]) == [pytest.approx(1.0), 0.0]
+    assert scorer.calls == [1]
+
+
+def test_suite_rejects_mismatched_batches() -> None:
+    with pytest.raises(ValueError):
+        RewardSuite(RewardConfig(), entailment=FakeNLI()).score(
+            [CLAUSE], [GOOD, GOOD], [GOOD], [ENTITIES]
+        )
+
+
+def test_grpo_reward_functions_are_named_for_logging_and_read_dataset_columns() -> None:
+    from trl.trainer.utils import get_callable_name
+
+    suite = RewardSuite(RewardConfig(), entailment=FakeNLI())
+    functions = suite.grpo_reward_functions()
+    assert [get_callable_name(f) for f in functions] == list(REWARD_NAMES)
+    completions = [[{"role": "assistant", "content": GOOD}], [{"role": "assistant", "content": ""}]]
+    columns = {
+        "clause": [CLAUSE] * 2,
+        "reference": [GOOD] * 2,
+        "entities": [ENTITIES] * 2,
+        "category": ["x"] * 2,
+    }
+    expected = suite.score([CLAUSE] * 2, [GOOD, ""], [GOOD] * 2, [ENTITIES] * 2)
+    for name, fn in zip(REWARD_NAMES, functions, strict=True):
+        values = fn(prompts=[[]] * 2, completions=completions, trainer_state=None, **columns)
+        assert values == [getattr(e, name) for e in expected]
+
+
+def test_completion_text_handles_messages_and_think_blocks() -> None:
+    assert completion_text("  a\n b ") == "a b"
+    assert (
+        completion_text(
+            [{"role": "assistant", "content": "<think>\nhmm\n</think>\n\nYou must pay."}]
+        )
+        == "You must pay."
+    )
